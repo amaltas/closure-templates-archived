@@ -25,6 +25,7 @@ import com.google.template.soy.msgs.restricted.SoyMsg;
 import com.google.template.soy.msgs.restricted.SoyMsgPart;
 import com.google.template.soy.msgs.restricted.SoyMsgPlaceholderPart;
 import com.google.template.soy.msgs.restricted.SoyMsgRawTextPart;
+import com.google.template.soy.msgs.restricted.SoyMsgPart.Case;
 
 import java.util.Map;
 
@@ -147,6 +148,10 @@ class XliffGenerator {
     ilb.appendLine("</xliff>");
 
     return ilb;
+  }
+
+  private List<Case> extractCases(SoyMsg msg) {
+
   }
 
 }

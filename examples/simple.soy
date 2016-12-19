@@ -48,15 +48,20 @@
  * @param names List of names of the people to say hello to.
  */
 {template .helloNames}
-  {foreach $name in $names}
-    {call .helloName}
-      {param name: $name /}
-    {/call}
-    {if not isLast($name)}
-      <br>  // break after every line except the last
-    {/if}
-  {ifempty}
-    // If names list is empty, say "Hello world".
-    {call .helloWorld /}
-  {/foreach}
+  /*
+  {msg desc="names"}
+    {plural length($names)}
+      {case 0}Hello nobody!
+      {case 1}Hello {$names[0]}
+      {default}Hello sheeple
+    {/plural}
+  {/msg}
+*/
+  {msg desc="names"}
+    {select length($names)}
+      {case 0}Hello nobody!
+      {case 1}Hello {$names[0]}
+      {default}Hello sheeple
+    {/select}
+  {/msg}
 {/template}
