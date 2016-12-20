@@ -2,6 +2,28 @@
 <xliff version="1.2" xmlns="urn:oasis:names:tc:xliff:document:1.2">
   <file original="SoyMsgBundle" datatype="x-soy-msg-bundle" xml:space="preserve" source-language="en">
     <body>
+      <trans-unit id="3022994926184248873" datatype="html">
+        <source>Hello world!</source>
+        <note priority="1" from="description">Says hello to the world.</note>
+      </trans-unit>
+      <trans-unit id="6936162475751860807" datatype="html">
+        <source>Hello <x id="NAME"/>!</source>
+        <note priority="1" from="description">Says hello to a person.</note>
+      </trans-unit>
+      <group restype="soy-plural">
+        <trans-unit id="8305523744051514333[0]" datatype="html">
+          <source>Hello nobody!</source>
+          <note priority="1" from="description">names</note>
+        </trans-unit>
+        <trans-unit id="8305523744051514333[1]" datatype="html">
+          <source>Hello <x id="XXX"/></source>
+          <note priority="1" from="description">names</note>
+        </trans-unit>
+        <trans-unit id="8305523744051514333[default]" datatype="html">
+          <source>Hello sheeple</source>
+          <note priority="1" from="description">names</note>
+        </trans-unit>
+      </group>
     </body>
   </file>
 </xliff>

@@ -59,8 +59,8 @@
 */
   {msg desc="names"}
     {select length($names)}
-      {case 0}Hello nobody!
-      {case 1}Hello {$names[0]}
+      {case '0'}Hello nobody!
+      {case '1'}Hello {$names[0]}
       {default}Hello sheeple
     {/select}
   {/msg}

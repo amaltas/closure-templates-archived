@@ -105,6 +105,12 @@ class XliffParser {
     /** Message id of the message we're currently building (while parsing). */
     private long currMsgId;
 
+    /**
+     * Parts of the group we're currently building (while parsing).
+     * A stack of SELECT or PLURAL or null (for groups that we don't recognized).
+     */
+    private List<XliffResType> currMsgGroups;
+
     /** Parts of the message we're currently building (while parsing). */
     private List<SoyMsgPart> currMsgParts;
 
@@ -163,6 +169,8 @@ class XliffParser {
         currRawTextPart = null;
         isInMsg = true;
 
+      } else if (qName.equals("group")) {
+        currMsgGroups.add(XliffResType.fromString(atts.getValue("restype")));
       } else if (isInMsg) {
         if (!qName.equals("x")) {
           throw new SoyMsgException(
@@ -193,6 +201,14 @@ class XliffParser {
         if (!currMsgParts.isEmpty()) {
           msgs.add(new SoyMsg(
               currMsgId, targetLocaleString, null, null, false, null, null, currMsgParts));
+        }
+      } else if (qName.equals("group")) {
+        if (!currMsgGroups.isEmpty()) {
+          currMsgGroups.remove(currMsgGroups.size() - 1);
+        }
+
+        if (currMsgGroups.isEmpty()) {
+
         }
       }
     }
