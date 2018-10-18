@@ -42,33 +42,29 @@ final class AssertStrictAutoescapingVisitor extends AbstractSoyNodeVisitor<Void>
     this.errorReporter = errorReporter;
   }
 
-  @Override public Void exec(SoyNode soyNode) {
+  @Override
+  public Void exec(SoyNode soyNode) {
     Preconditions.checkArgument(
         soyNode instanceof SoyFileSetNode || soyNode instanceof SoyFileNode);
     super.exec(soyNode);
     return null;
   }
 
-  @Override protected void visitSoyFileNode(SoyFileNode node) {
-    if (node.getDefaultAutoescapeMode() != AutoescapeMode.STRICT) {
-      errorReporter.report(node.getSourceLocation(), INVALID_AUTOESCAPING);
-      // If the file isn't strict, skip children to avoid spamming errors.
-      return;
-    }
-
+  @Override
+  protected void visitSoyFileNode(SoyFileNode node) {
     visitChildren(node);
   }
 
-  @Override protected void visitTemplateNode(TemplateNode node) {
+  @Override
+  protected void visitTemplateNode(TemplateNode node) {
     if (node.getAutoescapeMode() != AutoescapeMode.STRICT) {
       errorReporter.report(node.getSourceLocation(), INVALID_AUTOESCAPING);
     }
   }
 
-  /**
-   * Fallback implementation for all other nodes.
-   */
-  @Override protected void visitSoyNode(SoyNode node) {
+  /** Fallback implementation for all other nodes. */
+  @Override
+  protected void visitSoyNode(SoyNode node) {
     if (node instanceof ParentSoyNode<?>) {
       visitChildren((ParentSoyNode<?>) node);
     }

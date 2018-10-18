@@ -22,37 +22,42 @@ import com.google.template.soy.SoyFileSetParserBuilder;
 import com.google.template.soy.shared.SharedTestUtils;
 import com.google.template.soy.soytree.SoyFileSetNode;
 import com.google.template.soy.soytree.SoyNode;
-
-import junit.framework.TestCase;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.JUnit4;
 
 /**
  * Unit tests for IsComputableAsPyExprVisitor.
  *
  */
-public class IsComputableAsPyExprVisitorTest extends TestCase {
+@RunWith(JUnit4.class)
+public class IsComputableAsPyExprVisitorTest {
 
+  @Test
   public void testAlwaysTrueNodes() {
     runTestHelper("Blah blah.", true);
     runTestHelper("{@param boo:?}\n{$boo.foo}", true);
     // TODO(dcphillips): Add tests for other nodes (such as messages) when support is available.
   }
 
+  @Test
   public void testAlwaysFalseNodes() {
     runTestHelper("{let $data: 'foo'/}", false);
     runTestHelper(
         "{@param boo:?}\n{switch $boo}{case 0}Blah{case 1}Bleh{default}Bluh{/switch}", false);
-    runTestHelper("{@param booze:?}\n{foreach $boo in $booze}{$boo}{/foreach}", false);
+    runTestHelper("{@param booze:?}\n{for $boo in $booze}{$boo}{/for}", false);
     runTestHelper("{for $i in range(4)}{$i + 1}{/for}", false);
   }
 
+  @Test
   public void testIfNode() {
     runTestHelper(
         "{@param boo:?}\n{@param foo:?}\n{if $boo}Blah{elseif $foo}Bleh{else}Bluh{/if}", true);
     runTestHelper(
-        "{@param goo:?}\n{@param moose:?}\n{if $goo}{foreach $moo in $moose}{$moo}{/foreach}{/if}",
-        false);
+        "{@param goo:?}\n{@param moose:?}\n{if $goo}{for $moo in $moose}{$moo}{/for}{/if}", false);
   }
 
+  @Test
   public void testCallNode() {
     runTestHelper("{call .foo data=\"all\" /}", true);
     runTestHelper(
@@ -64,9 +69,9 @@ public class IsComputableAsPyExprVisitorTest extends TestCase {
             + "{@param moose:?}\n"
             + "{call .foo data=\"$boo\"}"
             + "  {param goo}"
-            + "    {foreach $moo in $moose}"
+            + "    {for $moo in $moose}"
             + "      {$moo}"
-            + "    {/foreach}"
+            + "    {/for}"
             + "  {/param}"
             + "{/call}",
         false);

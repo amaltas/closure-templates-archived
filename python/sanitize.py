@@ -76,10 +76,7 @@ _HTML_RAW_CONTENT_HAZARD_RE = re.compile(r'<\/|\]\]>')
 # Replacement strings for matches of _HTML_RAW_CONTENT_HAZARD_RE
 # that are semantically equivalent in CSS stylesheets.
 # See Sanitizers.java for a more detailed analysis.
-_HTML_RAW_CONTENT_HAZARD_REPLACEMENTS = {
-  '</': r'<\/',
-  ']]>': r']]\>'
-}
+_HTML_RAW_CONTENT_HAZARD_REPLACEMENTS = {'</': r'<\/', ']]>': r']]\>'}
 
 
 #######################################
@@ -101,6 +98,10 @@ def change_newline_to_br(value):
 def clean_html(value, safe_tags=None):
   if not safe_tags:
     safe_tags = generated_sanitize._SAFE_TAG_WHITELIST
+  else:
+    # Join the provided list with the default whitelist.
+    safe_tags = list(
+        set(safe_tags).union(generated_sanitize._SAFE_TAG_WHITELIST))
 
   if is_content_kind(value, CONTENT_KIND.HTML):
     return value
@@ -223,6 +224,20 @@ def filter_image_data_uri(value):
       generated_sanitize.filter_image_data_uri_helper(value), approval=approval)
 
 
+def filter_sip_uri(value):
+  approval = IActuallyUnderstandSoyTypeSafetyAndHaveSecurityApproval(
+      'Filtered URIs are by nature sanitized.')
+  return SanitizedUri(
+      generated_sanitize.filter_sip_uri_helper(value), approval=approval)
+
+
+def filter_tel_uri(value):
+  approval = IActuallyUnderstandSoyTypeSafetyAndHaveSecurityApproval(
+      'Filtered URIs are by nature sanitized.')
+  return SanitizedUri(
+      generated_sanitize.filter_tel_uri_helper(value), approval=approval)
+
+
 def filter_no_auto_escape(value):
   if is_content_kind(value, CONTENT_KIND.TEXT):
     return _INNOCUOUS_OUTPUT
@@ -249,8 +264,6 @@ def filter_normalize_media_uri(value):
 def filter_trusted_resource_uri(value):
   if is_content_kind(value, CONTENT_KIND.TRUSTED_RESOURCE_URI):
     return value.content
-  if isinstance(value, str):
-    return value
   return 'about:invalid#' + _INNOCUOUS_OUTPUT
 
 
@@ -383,7 +396,11 @@ def _tag_sub_handler(tag_whitelist, tags, match):
   """
   tag = match.group(0)
   name = match.group(1)
-  name = name.lower()
+  if name:
+    name = name.lower()
+
+  # TODO(user): We need special handling to preserve HTML attribute "dir".
+  # Similar to what we have in JsSrc:
   if name in tag_whitelist:
     start = '</' if tag[1] == '/' else '<'
     index = len(tags)
@@ -444,7 +461,7 @@ class CONTENT_KIND:
 
   @staticmethod
   def decodeKind(i):
-    i = i - 1;
+    i -= 1
     return ['HTML', 'JS', 'JS_STR_CHARS', 'URI', 'TRUSTED_RESOURCE_URI',
             'ATTRIBUTES', 'CSS', 'TEXT'][i]
 

@@ -16,29 +16,32 @@
 
 package com.google.template.soy.pysrc.internal;
 
+import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.truth.Truth.assertAbout;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.template.soy.shared.SharedTestUtils.untypedTemplateBodyForExpression;
 
+import com.google.common.base.Supplier;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.truth.FailureStrategy;
+import com.google.common.truth.FailureMetadata;
 import com.google.common.truth.Subject;
-import com.google.common.truth.SubjectFactory;
 import com.google.inject.Guice;
 import com.google.inject.Injector;
 import com.google.template.soy.SoyFileSetParserBuilder;
 import com.google.template.soy.SoyModule;
-import com.google.template.soy.error.ExplodingErrorReporter;
+import com.google.template.soy.error.ErrorReporter;
 import com.google.template.soy.exprtree.ExprNode;
+import com.google.template.soy.exprtree.Operator;
+import com.google.template.soy.internal.i18n.BidiGlobalDir;
 import com.google.template.soy.pysrc.internal.GenPyExprsVisitor.GenPyExprsVisitorFactory;
 import com.google.template.soy.pysrc.restricted.PyExpr;
+import com.google.template.soy.pysrc.restricted.PyExprUtils;
 import com.google.template.soy.shared.SharedTestUtils;
 import com.google.template.soy.shared.SoyGeneralOptions;
 import com.google.template.soy.soytree.PrintNode;
 import com.google.template.soy.soytree.SoyFileSetNode;
 import com.google.template.soy.soytree.SoyNode;
-
 import java.util.List;
 import java.util.Map;
 
@@ -50,15 +53,15 @@ import java.util.Map;
  */
 public final class SoyExprForPySubject extends Subject<SoyExprForPySubject, String> {
 
-  private final SoyGeneralOptions opts = new SoyGeneralOptions();
+  // disable optimizer for backwards compatibility
+  private final SoyGeneralOptions opts = new SoyGeneralOptions().disableOptimizer();
 
   private final LocalVariableStack localVarExprs;
 
   private final Injector injector;
 
-
-  private SoyExprForPySubject(FailureStrategy failureStrategy, String expr) {
-    super(failureStrategy, expr);
+  private SoyExprForPySubject(FailureMetadata failureMetadata, String expr) {
+    super(failureMetadata, expr);
     localVarExprs = new LocalVariableStack();
     injector = Guice.createInjector(new SoyModule());
   }
@@ -108,16 +111,28 @@ public final class SoyExprForPySubject extends Subject<SoyExprForPySubject, Stri
    * @param expectedPyExprs the expected result of compilation
    */
   public void compilesTo(List<PyExpr> expectedPyExprs) {
-    SoyFileSetNode soyTree = SoyFileSetParserBuilder.forTemplateContents(getSubject())
-        .parse()
-        .fileSet();
+    SoyFileSetNode soyTree =
+        SoyFileSetParserBuilder.forTemplateContents(getSubject()).parse().fileSet();
     SoyNode node = SharedTestUtils.getNode(soyTree, 0);
 
-    SharedTestUtils.simulateNewApiCall(injector);
+    SharedTestUtils.simulateNewApiCall(injector, null, BidiGlobalDir.LTR);
+    final IsComputableAsPyExprVisitor isComputableAsPyExprs = new IsComputableAsPyExprVisitor();
+    // There is a circular dependency between the GenPyExprsVisitorFactory and GenPyCallExprVisitor
+    // here we resolve it with a mutable field in a custom provider
+    class PyCallExprVisitorSupplier implements Supplier<GenPyCallExprVisitor> {
+      GenPyExprsVisitorFactory factory;
+
+      @Override
+      public GenPyCallExprVisitor get() {
+        return new GenPyCallExprVisitor(isComputableAsPyExprs, checkNotNull(factory));
+      }
+    }
+    PyCallExprVisitorSupplier provider = new PyCallExprVisitorSupplier();
+    GenPyExprsVisitorFactory genPyExprsFactory =
+        new GenPyExprsVisitorFactory(isComputableAsPyExprs, provider);
+    provider.factory = genPyExprsFactory;
     GenPyExprsVisitor genPyExprsVisitor =
-        injector
-            .getInstance(GenPyExprsVisitorFactory.class)
-            .create(localVarExprs, ExplodingErrorReporter.get());
+        genPyExprsFactory.create(localVarExprs, ErrorReporter.exploding());
     List<PyExpr> actualPyExprs = genPyExprsVisitor.exec(node);
 
     assertThat(actualPyExprs).hasSize(expectedPyExprs.size());
@@ -139,6 +154,14 @@ public final class SoyExprForPySubject extends Subject<SoyExprForPySubject, Stri
     translatesTo(expectedPyExpr, null);
   }
 
+  public void translatesTo(String expr, Operator precedence) {
+    translatesTo(new PyExpr(expr, PyExprUtils.pyPrecedenceForOperator(precedence)));
+  }
+
+  public void translatesTo(String expr, int precedence) {
+    translatesTo(new PyExpr(expr, precedence));
+  }
+
   /**
    * Asserts the subject translates to the expected PyExpr including verification of the exact
    * PyExpr class (e.g. {@code PyStringExpr.class}).
@@ -154,10 +177,10 @@ public final class SoyExprForPySubject extends Subject<SoyExprForPySubject, Stri
             .parse()
             .fileSet();
     PrintNode node = (PrintNode) SharedTestUtils.getNode(soyTree, 0);
-    ExprNode exprNode = node.getExprUnion().getExpr();
+    ExprNode exprNode = node.getExpr();
 
     PyExpr actualPyExpr =
-        new TranslateToPyExprVisitor(localVarExprs, ExplodingErrorReporter.get()).exec(exprNode);
+        new TranslateToPyExprVisitor(localVarExprs, ErrorReporter.exploding()).exec(exprNode);
     assertThat(actualPyExpr.getText()).isEqualTo(expectedPyExpr.getText());
     assertThat(actualPyExpr.getPrecedence()).isEqualTo(expectedPyExpr.getPrecedence());
 
@@ -166,18 +189,11 @@ public final class SoyExprForPySubject extends Subject<SoyExprForPySubject, Stri
     }
   }
 
-
-  //-----------------------------------------------------------------------------------------------
+  // -----------------------------------------------------------------------------------------------
   // Public static functions for starting a SoyExprForPySubject test.
 
-
-  private static final SubjectFactory<SoyExprForPySubject, String> SOYEXPR =
-      new SubjectFactory<SoyExprForPySubject, String>() {
-        @Override
-        public SoyExprForPySubject getSubject(FailureStrategy failureStrategy, String expr) {
-          return new SoyExprForPySubject(failureStrategy, expr);
-        }
-      };
+  private static final Subject.Factory<SoyExprForPySubject, String> SOYEXPR =
+      SoyExprForPySubject::new;
 
   public static SoyExprForPySubject assertThatSoyExpr(String expr) {
     return assertAbout(SOYEXPR).that(expr);

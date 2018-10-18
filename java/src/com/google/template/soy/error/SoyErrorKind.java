@@ -16,23 +16,29 @@
 
 package com.google.template.soy.error;
 
-
 import com.google.common.base.Preconditions;
-
 import java.text.MessageFormat;
 
 /**
- * Represents any syntactic or semantic error made by a Soy template author, which can be
- * collected during compilation and displayed back to the author.
- * (In particular, this class is not intended to convey errors in the Soy implementation itself.)
- * The error can be customized with {@link #format string arguments}.
+ * Represents any syntactic or semantic error made by a Soy template author, which can be collected
+ * during compilation and displayed back to the author. (In particular, this class is not intended
+ * to convey errors in the Soy implementation itself.) The error can be customized with {@link
+ * #format string arguments}.
  *
  * <p>Classes that report SoyErrorKinds should declare them as static final fields, making it easy
  * for readers to inspect the errors that the class could report.
  *
+ * <p>Error messages should be capitalized, and concluded with a punctuation mark.
+ *
  * @author brndn@google.com (Brendan Linn)
  */
 public final class SoyErrorKind {
+
+  /** Enum to enable exceptions to Soy error message formatting rules. */
+  public enum StyleAllowance {
+    NO_CAPS,
+    NO_PUNCTUATION,
+  }
 
   private final MessageFormat messageFormat;
   private final int requiredArgs;
@@ -43,17 +49,20 @@ public final class SoyErrorKind {
   }
 
   public String format(Object... args) {
-    Preconditions.checkState(args.length == requiredArgs,
-        "Error format required %s parameters, %s were supplied.", requiredArgs, args.length);
+    Preconditions.checkState(
+        args.length == requiredArgs,
+        "Error format required %s parameters, %s were supplied.",
+        requiredArgs,
+        args.length);
     return messageFormat.format(args);
   }
 
-  public static SoyErrorKind of(String format) {
-    checkFormat(format);
+  public static SoyErrorKind of(String format, StyleAllowance... exceptions) {
+    checkFormat(format, exceptions);
     return new SoyErrorKind(new MessageFormat(format));
   }
 
-  private static void checkFormat(String format) {
+  private static void checkFormat(String format, StyleAllowance... exceptions) {
     // Check for unmatched single quotes.  MessageFormat has some stupid legacy behavior to support
     // unmatched single quotes which is interpreted as 'escape the rest of the format string', this
     // is error prone.  If someone really wants to do that they can just add a "'" at the end of the
@@ -68,9 +77,34 @@ public final class SoyErrorKind {
       }
       index = nextIndex + 1;
     }
+
+    boolean checkCaps = true;
+    boolean checkPunctuation = true;
+    for (StyleAllowance ex : exceptions) {
+      if (ex == StyleAllowance.NO_CAPS) {
+        checkCaps = false;
+      }
+      if (ex == StyleAllowance.NO_PUNCTUATION) {
+        checkPunctuation = false;
+      }
+    }
+
+    // Error messages always start with a capital letter.
+    if (checkCaps && Character.isLowerCase(format.charAt(0))) {
+      throw new IllegalArgumentException("Message must start with a capital letter: " + format);
+    }
+
+    // Error messages should end with punctuation, unless it is a colon: statement
+    if (checkPunctuation) {
+      char lastChar = format.charAt(format.length() - 1);
+      if (Character.getType(lastChar) != Character.OTHER_PUNCTUATION) {
+        throw new IllegalArgumentException("Message must end with punctuation: " + format);
+      }
+    }
   }
 
-  @Override public String toString() {
+  @Override
+  public String toString() {
     return getClass().getSimpleName() + "{" + messageFormat.toPattern() + "}";
   }
 }

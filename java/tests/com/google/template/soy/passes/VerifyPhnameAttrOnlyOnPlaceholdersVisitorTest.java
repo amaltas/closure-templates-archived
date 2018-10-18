@@ -18,18 +18,21 @@ package com.google.template.soy.passes;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import com.google.common.collect.Iterables;
 import com.google.template.soy.SoyFileSetParserBuilder;
-import com.google.template.soy.error.ExplodingErrorReporter;
-import com.google.template.soy.error.FormattingErrorReporter;
-
-import junit.framework.TestCase;
+import com.google.template.soy.error.ErrorReporter;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.JUnit4;
 
 /**
  * Unit tests for VerifyPhnameAttrOnlyOnPlaceholdersVisitor.
  *
  */
-public final class VerifyPhnameAttrOnlyOnPlaceholdersVisitorTest extends TestCase {
+@RunWith(JUnit4.class)
+public final class VerifyPhnameAttrOnlyOnPlaceholdersVisitorTest {
 
+  @Test
   public void testVerifyPhnameAttrOnlyOnPlaceholders() {
     assertInvalidSoyCode("{@param boo : ?}\n{$boo phname=\"foo\"}");
     assertInvalidSoyCode("{call .helper phname=\"foo\" /}");
@@ -40,14 +43,14 @@ public final class VerifyPhnameAttrOnlyOnPlaceholdersVisitorTest extends TestCas
   private void assertValidSoyCode(String soyCode) {
     // this pass is part of the default passes, so we can just fire away
     SoyFileSetParserBuilder.forTemplateContents(soyCode)
-        .errorReporter(ExplodingErrorReporter.get())
+        .errorReporter(ErrorReporter.exploding())
         .parse();
   }
 
   private void assertInvalidSoyCode(String soyCode) {
-    FormattingErrorReporter errors = new FormattingErrorReporter();
+    ErrorReporter errors = ErrorReporter.createForTest();
     SoyFileSetParserBuilder.forTemplateContents(soyCode).errorReporter(errors).parse();
-    assertThat(errors.getErrorMessages())
-        .contains("'phname' attributes are only valid inside '{msg...' tags");
+    assertThat(Iterables.getOnlyElement(errors.getErrors()).message())
+        .contains("'phname' attributes are only valid inside '{msg...' tags.");
   }
 }

@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """Runtime module for compiled soy templates.
 
 This module provides utility functions required by soy templates compiled with
@@ -25,6 +24,7 @@ from __future__ import unicode_literals
 __author__ = 'dcphillips@google.com (David Phillips)'
 
 import importlib
+import math
 import os
 import re
 import sys
@@ -43,18 +43,35 @@ try:
 except NameError:
   pass
 
-
 # Map from registered delegate template key to the priority, function, and
 # function name tuple.
 _DELEGATE_REGISTRY = {}
 
-
 # All number types for use during custom type functions.
 _NUMBER_TYPES = (int, long, float)
 
-
 # The mapping of css class names for get_css_name.
 _css_name_mapping = None
+
+# The xid map for get_xid_name.
+_xid_name_mapping = None
+
+
+def get_xid_name(xid):
+  """Return the mapped xid name.
+
+  Args:
+    xid: The xid name to modify.
+
+  Returns:
+    The renamed xid.
+  """
+  if _xid_name_mapping:
+    renamed = _xid_name_mapping.get(xid)
+    if renamed:
+      return renamed
+
+  return xid + '_'
 
 
 def get_css_name(class_name, modifier=None):
@@ -101,6 +118,16 @@ def set_css_name_mapping(mapping):
   _css_name_mapping = mapping
 
 
+def set_xid_name_mapping(mapping):
+  """Sets the mapping of xids.
+
+  Args:
+    mapping: A dictionary of xid names.
+  """
+  global _xid_name_mapping
+  _xid_name_mapping = mapping
+
+
 def get_delegate_fn(template_id, variant, allow_empty_default):
   """Get the delegate function associated with the given template_id/variant.
 
@@ -136,9 +163,9 @@ def get_delegate_fn(template_id, variant, allow_empty_default):
   elif allow_empty_default:
     return _empty_template_function
   else:
-    msg = ('Found no active impl for delegate call to "%s:%s"'
-           '(and not allow_empty_default="true").')
-    raise RuntimeError(msg % (template_id, variant))
+    msg = ('Found no active impl for delegate call to "%s%s" '
+           '(and delcall does not set allowemptydefault="true").')
+    raise RuntimeError(msg % (template_id, ':' + variant if variant else ''))
 
 
 def merge_into_dict(original, secondary):
@@ -405,6 +432,58 @@ def check_not_null(val):
     raise RuntimeError('Unexpected null value')
   return val
 
+
+def parse_int(s):
+  """A function that attempts to convert the input string into an int.
+
+  Returns None if the input is not a valid int.
+
+  Args:
+    s: String to convert.
+
+  Returns:
+    int if s is a valid int string, otherwise None.
+  """
+  try:
+    return int(s)
+  except ValueError:
+    return None
+
+
+def parse_float(s):
+  """A function that attempts to convert the input string into a float.
+
+  Returns None if the input is not a valid float, or if the input is NaN.
+
+  Args:
+    s: String to convert.
+
+  Returns:
+    float if s is a valid float string that is not NaN, otherwise None.
+  """
+  try:
+    f = float(s)
+  except ValueError:
+    return None
+  return None if math.isnan(f) else f
+
+def unsupported(str):
+  raise Exception("unsupported feature: " + str)
+
+
+def map_to_legacy_object_map(m):
+  """Converts a Soy map to a Soy legacy_object_map.
+
+  legacy_object_maps must have string keys, but maps do not have this
+  restriction.
+
+  Args:
+    m: Map to convert.
+
+  Returns:
+    An equivalent legacy_object_map, with keys coerced to strings.
+  """
+  return {str(key): m[key] for key in m}
 
 ######################
 # Utility functions. #

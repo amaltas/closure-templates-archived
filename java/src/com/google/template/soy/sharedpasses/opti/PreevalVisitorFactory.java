@@ -18,43 +18,32 @@ package com.google.template.soy.sharedpasses.opti;
 
 import com.google.common.base.Preconditions;
 import com.google.template.soy.data.SoyRecord;
-import com.google.template.soy.data.SoyValueHelper;
+import com.google.template.soy.msgs.SoyMsgBundle;
+import com.google.template.soy.shared.SoyCssRenamingMap;
+import com.google.template.soy.shared.SoyIdRenamingMap;
 import com.google.template.soy.sharedpasses.render.Environment;
 import com.google.template.soy.sharedpasses.render.EvalVisitor.EvalVisitorFactory;
-
 import javax.annotation.Nullable;
-import javax.inject.Inject;
-import javax.inject.Singleton;
 
 /**
  * A factory for creating PreevalVisitor objects.
  *
- * <p> Important: Do not use outside of Soy code (treat as superpackage-private).
+ * <p>Important: Do not use outside of Soy code (treat as superpackage-private).
  *
  */
-@Singleton
-public final class PreevalVisitorFactory implements EvalVisitorFactory {
+final class PreevalVisitorFactory implements EvalVisitorFactory {
 
-  /** Instance of SoyValueHelper to use. */
-  private final SoyValueHelper valueHelper;
-
-  @Inject
-  public PreevalVisitorFactory(SoyValueHelper valueHelper) {
-    this.valueHelper = valueHelper;
-  }
-
-
-  public PreevalVisitor create(Environment env) {
-    return new PreevalVisitor(valueHelper, env);
-  }
-
-
-  @Override public PreevalVisitor create(
-      @Nullable SoyRecord ijData, Environment env) {
+  @Override
+  public PreevalVisitor create(
+      Environment env,
+      @Nullable SoyRecord ijData,
+      @Nullable SoyCssRenamingMap cssRenamingMap,
+      @Nullable SoyIdRenamingMap xidRenamingMap,
+      @Nullable SoyMsgBundle msgBundle,
+      boolean debugSoyTemplateInfo) {
 
     // PreevalVisitor cannot handle ijData references.
     Preconditions.checkArgument(ijData == null);
-
-    return new PreevalVisitor(valueHelper, env);
+    return new PreevalVisitor(env);
   }
 }

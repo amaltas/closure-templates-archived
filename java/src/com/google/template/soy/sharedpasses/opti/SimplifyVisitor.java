@@ -17,22 +17,12 @@
 package com.google.template.soy.sharedpasses.opti;
 
 import com.google.common.base.Preconditions;
+import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.template.soy.base.internal.IdGenerator;
-import com.google.template.soy.basetree.SyntaxVersion;
 import com.google.template.soy.data.SoyValue;
-import com.google.template.soy.data.restricted.BooleanData;
-import com.google.template.soy.data.restricted.FloatData;
-import com.google.template.soy.data.restricted.IntegerData;
-import com.google.template.soy.data.restricted.NullData;
-import com.google.template.soy.data.restricted.StringData;
-import com.google.template.soy.exprtree.BooleanNode;
 import com.google.template.soy.exprtree.ExprNode;
-import com.google.template.soy.exprtree.ExprNode.PrimitiveNode;
 import com.google.template.soy.exprtree.ExprRootNode;
-import com.google.template.soy.exprtree.FloatNode;
-import com.google.template.soy.exprtree.IntegerNode;
-import com.google.template.soy.exprtree.StringNode;
 import com.google.template.soy.sharedpasses.render.RenderException;
 import com.google.template.soy.soytree.AbstractSoyNodeVisitor;
 import com.google.template.soy.soytree.IfCondNode;
@@ -41,39 +31,41 @@ import com.google.template.soy.soytree.IfNode;
 import com.google.template.soy.soytree.PrintDirectiveNode;
 import com.google.template.soy.soytree.PrintNode;
 import com.google.template.soy.soytree.RawTextNode;
+import com.google.template.soy.soytree.SoyFileNode;
 import com.google.template.soy.soytree.SoyFileSetNode;
 import com.google.template.soy.soytree.SoyNode;
 import com.google.template.soy.soytree.SoyNode.BlockNode;
 import com.google.template.soy.soytree.SoyNode.MsgBlockNode;
 import com.google.template.soy.soytree.SoyNode.ParentSoyNode;
 import com.google.template.soy.soytree.SoyNode.StandaloneNode;
-import com.google.template.soy.soytree.SoytreeUtils;
+import com.google.template.soy.soytree.SoyTreeUtils;
 import com.google.template.soy.soytree.SwitchCaseNode;
 import com.google.template.soy.soytree.SwitchDefaultNode;
 import com.google.template.soy.soytree.SwitchNode;
 import com.google.template.soy.soytree.TemplateRegistry;
-
 import java.util.List;
-
-import javax.inject.Inject;
+import javax.annotation.Nullable;
 
 /**
  * Visitor for simplifying subtrees based on constant values known at compile time.
  *
- * <p> Important: Do not use outside of Soy code (treat as superpackage-private).
- *
+ * <p>Important: Do not use outside of Soy code (treat as superpackage-private).
  *
  */
 public final class SimplifyVisitor {
 
-  private final SimplifyExprVisitor simplifyExprVisitor;
-  private final PrerenderVisitorFactory prerenderVisitorFactory;
+  /** Creates a new simplify visitor. */
+  public static SimplifyVisitor create() {
+    return new SimplifyVisitor(new SimplifyExprVisitor(), new PreevalVisitorFactory());
+  }
 
-  @Inject
-  public SimplifyVisitor(
-      SimplifyExprVisitor simplifyExprVisitor, PrerenderVisitorFactory prerenderVisitorFactory) {
+  private final SimplifyExprVisitor simplifyExprVisitor;
+  private final PreevalVisitorFactory preevalVisitorFactory;
+
+  private SimplifyVisitor(
+      SimplifyExprVisitor simplifyExprVisitor, PreevalVisitorFactory preevalVisitorFactory) {
     this.simplifyExprVisitor = simplifyExprVisitor;
-    this.prerenderVisitorFactory = prerenderVisitorFactory;
+    this.preevalVisitorFactory = preevalVisitorFactory;
   }
 
   /** Simplifies the given file set. */
@@ -96,11 +88,15 @@ public final class SimplifyVisitor {
       Preconditions.checkArgument(node instanceof SoyFileSetNode);
       SoyFileSetNode nodeAsRoot = (SoyFileSetNode) node;
 
-      // First simplify all expressions in the subtree.
-      SoytreeUtils.execOnAllV2Exprs(nodeAsRoot, simplifyExprVisitor);
+      // no point in optimizing non-src files
+      for (SoyFileNode file :
+          Iterables.filter(nodeAsRoot.getChildren(), SoyFileNode.MATCH_SRC_FILENODE)) {
+        // First simplify all expressions in the subtree.
+        SoyTreeUtils.execOnAllV2Exprs(file, simplifyExprVisitor);
 
-      // Simpify the subtree.
-      super.exec(nodeAsRoot);
+        // Simpify the subtree.
+        visit(file);
+      }
 
       return null;
     }
@@ -112,23 +108,18 @@ public final class SimplifyVisitor {
     protected void visitPrintNode(PrintNode node) {
 
       // We attempt to prerender this node if and only if it:
-      // (a) could be in V2 syntax and has a V2 expression,
+      // (a) is in V2 syntax,
       // (b) is not a child of a MsgBlockNode,
       // (c) has a constant expression,
       // (d) has constant expressions for all directive arguments (if any).
       // The prerender attempt may fail due to other reasons not checked above.
 
-      if (!node.couldHaveSyntaxVersionAtLeast(SyntaxVersion.V2_0)
-          || node.getExprUnion().getExpr() == null) {
-        return;
-      }
-
-      BlockNode parent = node.getParent();
+      ParentSoyNode<StandaloneNode> parent = node.getParent();
       if (parent instanceof MsgBlockNode) {
         return; // don't prerender
       }
 
-      if (!isConstant(node.getExprUnion().getExpr())) {
+      if (!isConstant(node.getExpr())) {
         return; // don't prerender
       }
 
@@ -143,19 +134,21 @@ public final class SimplifyVisitor {
       StringBuilder prerenderOutputSb = new StringBuilder();
       try {
         PrerenderVisitor prerenderer =
-            prerenderVisitorFactory.create(prerenderOutputSb, templateRegistry);
+            new PrerenderVisitor(preevalVisitorFactory, prerenderOutputSb, templateRegistry);
         prerenderer.exec(node);
       } catch (RenderException pe) {
         return; // cannot prerender for some other reason not checked above
       }
 
       // Replace this node with a RawTextNode.
-      parent.replaceChild(
-          node,
-          new RawTextNode(
-              nodeIdGen.genId(), prerenderOutputSb.toString(), node.getSourceLocation()));
+      String string = prerenderOutputSb.toString();
+      if (string.isEmpty()) {
+        parent.removeChild(node);
+      } else {
+        parent.replaceChild(
+            node, new RawTextNode(nodeIdGen.genId(), string, node.getSourceLocation()));
+      }
     }
-
 
     @Override
     protected void visitIfNode(IfNode node) {
@@ -172,7 +165,7 @@ public final class SimplifyVisitor {
         if (child instanceof IfCondNode) {
           IfCondNode condNode = (IfCondNode) child;
 
-          ExprRootNode condExpr = condNode.getExprUnion().getExpr();
+          ExprRootNode condExpr = condNode.getExpr();
           if (!isConstant(condExpr)) {
             continue; // cannot simplify this child
           }
@@ -210,7 +203,6 @@ public final class SimplifyVisitor {
         replaceNodeWithList(node, ((IfElseNode) node.getChild(0)).getChildren());
       }
     }
-
 
     @Override
     protected void visitSwitchNode(SwitchNode node) {
@@ -262,7 +254,7 @@ public final class SimplifyVisitor {
             break;
 
           } else if (hasAllNonmatchingConstants) {
-            // ------ Has all contant exprs and none match. ------
+            // ------ Has all constant exprs and none match. ------
             node.removeChild(caseNode);
           }
         }
@@ -335,11 +327,11 @@ public final class SimplifyVisitor {
     }
 
     /**
-     * Helper to add consecutive RawTextNodes as one child node (the raw text will be joined).
-     * If the consecutive RawTextNodes list actually only has one item, then adds that node instead
-     * of creating a new RawTextNode.
+     * Helper to add consecutive RawTextNodes as one child node (the raw text will be joined). If
+     * the consecutive RawTextNodes list actually only has one item, then adds that node instead of
+     * creating a new RawTextNode.
      *
-     * Note: This function works closely with the above code. In particular, it assumes we're
+     * <p>Note: This function works closely with the above code. In particular, it assumes we're
      * rebuilding the whole list (thus adding to the end of the parent) instead of fixing the old
      * list in-place.
      *
@@ -368,29 +360,17 @@ public final class SimplifyVisitor {
   // -----------------------------------------------------------------------------------------------
   // Helpers.
 
-
-  private static boolean isConstant(ExprRootNode exprRoot) {
-    return exprRoot != null && exprRoot.getRoot() instanceof PrimitiveNode;
+  private static boolean isConstant(@Nullable ExprRootNode exprRoot) {
+    return exprRoot != null && SimplifyExprVisitor.isConstant(exprRoot.getRoot());
   }
 
-
   private static SoyValue getConstantOrNull(ExprRootNode exprRoot) {
-
     if (exprRoot == null) {
       return null;
     }
-
     ExprNode expr = exprRoot.getRoot();
-    switch (expr.getKind()) {
-      case NULL_NODE: return NullData.INSTANCE;
-      case BOOLEAN_NODE: return BooleanData.forValue(((BooleanNode) expr).getValue());
-      case INTEGER_NODE: return IntegerData.forValue(((IntegerNode) expr).getValue());
-      case FLOAT_NODE: return FloatData.forValue(((FloatNode) expr).getValue());
-      case STRING_NODE: return StringData.forValue(((StringNode) expr).getValue());
-      default: return null;
-    }
+    return SimplifyExprVisitor.getConstantOrNull(expr);
   }
-
 
   /**
    * @param origNode The original node to replace.
@@ -399,10 +379,9 @@ public final class SimplifyVisitor {
   private static void replaceNodeWithList(
       StandaloneNode origNode, List<? extends StandaloneNode> replacementNodes) {
 
-    BlockNode parent = origNode.getParent();
+    ParentSoyNode<StandaloneNode> parent = origNode.getParent();
     int indexInParent = parent.getChildIndex(origNode);
     parent.removeChild(indexInParent);
     parent.addChildren(indexInParent, replacementNodes);
   }
-
 }

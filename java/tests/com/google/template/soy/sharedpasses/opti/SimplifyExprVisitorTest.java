@@ -17,30 +17,32 @@
 package com.google.template.soy.sharedpasses.opti;
 
 import com.google.common.collect.ImmutableMap;
-import com.google.common.truth.FailureStrategy;
+import com.google.common.truth.FailureMetadata;
 import com.google.common.truth.Subject;
-import com.google.common.truth.SubjectFactory;
 import com.google.common.truth.Truth;
 import com.google.inject.Guice;
 import com.google.inject.Injector;
 import com.google.inject.Key;
 import com.google.template.soy.SoyModule;
-import com.google.template.soy.base.SourceLocation;
-import com.google.template.soy.exprparse.ExpressionParser;
-import com.google.template.soy.exprparse.SoyParsingContext;
+import com.google.template.soy.error.ErrorReporter;
 import com.google.template.soy.exprtree.ExprRootNode;
-import com.google.template.soy.passes.ResolveFunctionsVisitor;
 import com.google.template.soy.shared.restricted.SoyFunction;
-
-import junit.framework.TestCase;
-
+import com.google.template.soy.shared.restricted.SoyPrintDirective;
+import com.google.template.soy.soyparse.PluginResolver;
+import com.google.template.soy.soyparse.PluginResolver.Mode;
+import com.google.template.soy.soyparse.SoyFileParser;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.JUnit4;
 
 /**
  * Unit tests for {@link SimplifyExprVisitor}.
  *
  */
-public final class SimplifyExprVisitorTest extends TestCase {
+@RunWith(JUnit4.class)
+public final class SimplifyExprVisitorTest {
 
+  @Test
   public void testSimplifyFullySimplifiableExpr() {
     assertThat("-99+-111").simplifiesTo("-210");
     assertThat("-99+-111").simplifiesTo("-210");
@@ -55,7 +57,7 @@ public final class SimplifyExprVisitorTest extends TestCase {
     assertThat("floor(7/2)").simplifiesTo("3");
   }
 
-
+  @Test
   public void testSimplifyNotSimplifiableExpr() {
     assertThat("$boo").simplifiesTo("$boo");
     assertThat("$boo % 3").simplifiesTo("$boo % 3");
@@ -67,7 +69,7 @@ public final class SimplifyExprVisitorTest extends TestCase {
     assertThat("floor($boo / 3)").simplifiesTo("floor($boo / 3)");
   }
 
-
+  @Test
   public void testSimplifyPartiallySimplifiableExpr() {
     assertThat("3 * 5 % $boo").simplifiesTo("15 % $boo");
     assertThat("not false and not $boo").simplifiesTo("not $boo");
@@ -78,7 +80,7 @@ public final class SimplifyExprVisitorTest extends TestCase {
     assertThat("floor($boo / (1.0 + 2))").simplifiesTo("floor($boo / 3.0)");
   }
 
-
+  @Test
   public void testSimplifyListAndMapLiterals() {
     assertThat("['a' + 'b', 1 - 3]").simplifiesTo("['ab', -2]");
     assertThat("['a' + 'b': 1 - 3]").simplifiesTo("['ab': -2]");
@@ -86,13 +88,13 @@ public final class SimplifyExprVisitorTest extends TestCase {
     assertThat("['z': ['a' + 'b': 1 - 3]]").simplifiesTo("['z': ['ab': -2]]");
 
     // With functions.
-    // Note: Currently, ListLiteralNode and MapLiteralNode are never considered to be constant,
-    // even though in reality, they can be constant. So in the current implementation, this keys()
-    // call cannot be simplified away.
+    // Note: Currently, ListLiteralNode and LegacyObjectMapLiteralNode are never considered to be
+    // constant, even though in reality, they can be constant. So in the current implementation,
+    // this keys() call cannot be simplified away.
     assertThat("keys(['a' + 'b': 1 - 3])").simplifiesTo("keys(['ab': -2])");
   }
 
-
+  @Test
   public void testSimplifyBinaryLogicalOps() {
     // 'and'
     assertThat("true and true").simplifiesTo("true");
@@ -123,7 +125,7 @@ public final class SimplifyExprVisitorTest extends TestCase {
     assertThat("1 or true").simplifiesTo("1");
   }
 
-
+  @Test
   public void testSimplifyConditionalOp() {
     assertThat("true ? 111 : 222").simplifiesTo("111");
     assertThat("false ? 111 : 222").simplifiesTo("222");
@@ -132,7 +134,6 @@ public final class SimplifyExprVisitorTest extends TestCase {
     assertThat("$boo or true ? $boo and false : true")
         .simplifiesTo("$boo or true ? $boo and false : true"); // Can't simplify
   }
-
 
   // -----------------------------------------------------------------------------------------------
   // Helpers.
@@ -143,27 +144,27 @@ public final class SimplifyExprVisitorTest extends TestCase {
       INJECTOR.getInstance(new Key<ImmutableMap<String, ? extends SoyFunction>>() {});
 
   private static final class SimplifySubject extends Subject<SimplifySubject, String> {
-    private SimplifySubject(FailureStrategy failureStrategy, String s) {
-      super(failureStrategy, s);
+    private SimplifySubject(FailureMetadata failureMetadata, String s) {
+      super(failureMetadata, s);
     }
 
     private void simplifiesTo(String expected) {
-      ExprRootNode exprRoot = new ExprRootNode(
-          new ExpressionParser(getSubject(), SourceLocation.UNKNOWN, SoyParsingContext.exploding())
-          .parseExpression());
-      new ResolveFunctionsVisitor(SOY_FUNCTIONS).exec(exprRoot);
-      INJECTOR.getInstance(SimplifyExprVisitor.class).exec(exprRoot);
+      ExprRootNode exprRoot =
+          new ExprRootNode(
+              SoyFileParser.parseExpression(
+                  actual(),
+                  new PluginResolver(
+                      Mode.REQUIRE_DEFINITIONS,
+                      ImmutableMap.<String, SoyPrintDirective>of(),
+                      SOY_FUNCTIONS,
+                      ErrorReporter.exploding()),
+                  ErrorReporter.exploding()));
+      new SimplifyExprVisitor().exec(exprRoot);
       Truth.assertThat(exprRoot.toSourceString()).isEqualTo(expected);
     }
   }
 
-  private static final SubjectFactory<SimplifySubject, String> FACTORY =
-      new SubjectFactory<SimplifySubject, String>() {
-    @Override
-    public SimplifySubject getSubject(FailureStrategy failureStrategy, String s) {
-      return new SimplifySubject(failureStrategy, s);
-    }
-  };
+  private static final Subject.Factory<SimplifySubject, String> FACTORY = SimplifySubject::new;
 
   private static SimplifySubject assertThat(String input) {
     return Truth.assertAbout(FACTORY).that(input);

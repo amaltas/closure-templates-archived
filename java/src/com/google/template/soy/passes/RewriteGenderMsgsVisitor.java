@@ -23,7 +23,6 @@ import com.google.template.soy.base.internal.IdGenerator;
 import com.google.template.soy.error.ErrorReporter;
 import com.google.template.soy.error.ErrorReporter.Checkpoint;
 import com.google.template.soy.error.SoyErrorKind;
-import com.google.template.soy.exprparse.SoyParsingContext;
 import com.google.template.soy.exprtree.ExprRootNode;
 import com.google.template.soy.soytree.AbstractSoyNodeVisitor;
 import com.google.template.soy.soytree.MsgNode;
@@ -35,10 +34,8 @@ import com.google.template.soy.soytree.MsgSubstUnitBaseVarNameUtils;
 import com.google.template.soy.soytree.SoyNode;
 import com.google.template.soy.soytree.SoyNode.ParentSoyNode;
 import com.google.template.soy.soytree.SoyNode.StandaloneNode;
-import com.google.template.soy.soytree.SoytreeUtils;
-
+import com.google.template.soy.soytree.SoyTreeUtils;
 import java.util.List;
-
 import javax.annotation.Nullable;
 
 /**
@@ -48,22 +45,24 @@ import javax.annotation.Nullable;
  */
 final class RewriteGenderMsgsVisitor extends AbstractSoyNodeVisitor<Void> {
 
-  private static final SoyErrorKind GENDER_AND_SELECT_NOT_ALLOWED =
+  private static final SoyErrorKind MORE_THAN_THREE_TOTAL_GENDERS =
       SoyErrorKind.of(
-          "Cannot mix ''genders'' attribute with ''select'' command in the same message.");
-  private static final SoyErrorKind MORE_THAN_TWO_GENDER_EXPRS =
+          "A message can only contain at most 3 genders between the ''genders'' attribute and "
+              + "''select'' command.");
+
+  private static final SoyErrorKind MORE_THAN_TWO_GENDER_EXPRS_WITH_PLURAL =
       SoyErrorKind.of(
-          "In a msg with ''plural'', the ''genders'' attribute can contain at most 2 expressions "
-              + "(otherwise, combinatorial explosion would cause a gigantic generated message).");
+          "A msg with ''plural'' can contain at most 2 gender expressions between the "
+              + "''genders'' attribute and ''select'' command (otherwise, combinatorial explosion "
+              + "would cause a gigantic generated message).");
 
   /** Fallback base select var name. */
-  public static final String FALLBACK_BASE_SELECT_VAR_NAME = "GENDER";
+  private static final String FALLBACK_BASE_SELECT_VAR_NAME = "GENDER";
+
   private final ErrorReporter errorReporter;
 
-
   /** Node id generator for the Soy tree being visited. */
-  private IdGenerator nodeIdGen;
-
+  private final IdGenerator nodeIdGen;
 
   /**
    * Constructs a rewriter using the same node ID generator as the tree.
@@ -71,7 +70,7 @@ final class RewriteGenderMsgsVisitor extends AbstractSoyNodeVisitor<Void> {
    * @param nodeIdGen The same node ID generator used to generate the existing tree nodes.
    */
   public RewriteGenderMsgsVisitor(IdGenerator nodeIdGen, ErrorReporter errorReporter) {
-    this.errorReporter = errorReporter;
+    this.errorReporter = Preconditions.checkNotNull(errorReporter);
     this.nodeIdGen = Preconditions.checkNotNull(nodeIdGen);
   }
 
@@ -85,17 +84,6 @@ final class RewriteGenderMsgsVisitor extends AbstractSoyNodeVisitor<Void> {
     List<ExprRootNode> genderExprs = msg.getAndRemoveGenderExprs();
     if (genderExprs == null) {
       return;  // not a msg that this pass should rewrite
-    }
-
-    // Check that 'genders' attribute and 'select' command are not used together.
-    if (msg.getChild(0) instanceof MsgSelectNode) {
-      errorReporter.report(
-          msg.getChild(0).getSourceLocation(), GENDER_AND_SELECT_NOT_ALLOWED);
-    }
-
-    // If plural msg, check that there are max 2 genders.
-    if (msg.getChild(0) instanceof MsgPluralNode && genderExprs.size() > 2) {
-      errorReporter.report(msg.getSourceLocation(), MORE_THAN_TWO_GENDER_EXPRS);
     }
 
     // ------ Do the rewrite. ------
@@ -128,12 +116,17 @@ final class RewriteGenderMsgsVisitor extends AbstractSoyNodeVisitor<Void> {
 
       splitMsgForGender(msg, genderExpr, baseSelectVarName);
     }
+
+    // ------ Verify from the re-written msg that gender restrictions are followed. ------
+
+    checkExceedsMaxGenders((MsgSelectNode) msg.getChild(0), 1);
   }
 
 
   /**
-   * Helper to split a msg for gender, by adding a 'select' node and cloning the msg's contents
-   * into all 3 cases of the 'select' node ('female'/'male'/default).
+   * Helper to split a msg for gender, by adding a 'select' node and cloning the msg's contents into
+   * all 3 cases of the 'select' node ('female'/'male'/default).
+   *
    * @param msg The message to split.
    * @param genderExpr The expression for the gender value.
    * @param baseSelectVarName The base select var name to use, or null if it should be generated
@@ -145,24 +138,19 @@ final class RewriteGenderMsgsVisitor extends AbstractSoyNodeVisitor<Void> {
     List<StandaloneNode> origChildren = ImmutableList.copyOf(msg.getChildren());
     msg.clearChildren();
 
-    // We cannot easily access the original context.  However, because everything has already been
-    // parsed, that should be fine.  I don't think this can fail at all, but whatever.
-    SoyParsingContext context = SoyParsingContext.empty(errorReporter, "fake.namespace");
+    MsgSelectCaseNode femaleCase =
+        new MsgSelectCaseNode(nodeIdGen.genId(), msg.getSourceLocation(), "female");
+    femaleCase.addChildren(SoyTreeUtils.cloneListWithNewIds(origChildren, nodeIdGen));
+    MsgSelectCaseNode maleCase =
+        new MsgSelectCaseNode(nodeIdGen.genId(), msg.getSourceLocation(), "male");
+    maleCase.addChildren(SoyTreeUtils.cloneListWithNewIds(origChildren, nodeIdGen));
+    MsgSelectDefaultNode defaultCase =
+        new MsgSelectDefaultNode(nodeIdGen.genId(), msg.getSourceLocation());
+    defaultCase.addChildren(SoyTreeUtils.cloneListWithNewIds(origChildren, nodeIdGen));
 
-    MsgSelectCaseNode femaleCase
-        = new MsgSelectCaseNode.Builder(nodeIdGen.genId(), "'female'", msg.getSourceLocation())
-            .build(context);
-    femaleCase.addChildren(SoytreeUtils.cloneListWithNewIds(origChildren, nodeIdGen));
-    MsgSelectCaseNode maleCase
-        = new MsgSelectCaseNode.Builder(nodeIdGen.genId(), "'male'", msg.getSourceLocation())
-            .build(context);
-    maleCase.addChildren(SoytreeUtils.cloneListWithNewIds(origChildren, nodeIdGen));
-    MsgSelectDefaultNode defaultCase
-        = new MsgSelectDefaultNode(nodeIdGen.genId(), msg.getSourceLocation());
-    defaultCase.addChildren(SoytreeUtils.cloneListWithNewIds(origChildren, nodeIdGen));
-
-    MsgSelectNode selectNode = new MsgSelectNode(
-        nodeIdGen.genId(), msg.getSourceLocation(), genderExpr, baseSelectVarName);
+    MsgSelectNode selectNode =
+        new MsgSelectNode(
+            nodeIdGen.genId(), msg.getSourceLocation(), genderExpr, baseSelectVarName);
     selectNode.addChild(femaleCase);
     selectNode.addChild(maleCase);
     selectNode.addChild(defaultCase);
@@ -170,6 +158,39 @@ final class RewriteGenderMsgsVisitor extends AbstractSoyNodeVisitor<Void> {
     msg.addChild(selectNode);
   }
 
+  /**
+   * Helper to verify that a rewritten soy msg tree does not exceed the restriction on number of
+   * total genders allowed (2 if includes plural, 3 otherwise).
+   *
+   * @param selectNode The select node to start searching from.
+   * @param depth The current depth of the select node.
+   * @return Whether the tree is valid.
+   */
+  private boolean checkExceedsMaxGenders(MsgSelectNode selectNode, int depth) {
+    for (int caseNum = 0; caseNum < selectNode.numChildren(); caseNum++) {
+      if (selectNode.getChild(caseNum).numChildren() > 0) {
+        StandaloneNode caseNodeChild = selectNode.getChild(caseNum).getChild(0);
+        // Plural cannot contain plurals or selects, so no need to recurse further.
+        if (caseNodeChild instanceof MsgPluralNode && depth >= 3) {
+          errorReporter.report(
+              selectNode.getSourceLocation(), MORE_THAN_TWO_GENDER_EXPRS_WITH_PLURAL);
+          return false;
+        }
+        if (caseNodeChild instanceof MsgSelectNode) {
+          if (depth >= 3) {
+            errorReporter.report(selectNode.getSourceLocation(), MORE_THAN_THREE_TOTAL_GENDERS);
+            return false;
+          } else {
+            boolean validSubtree = checkExceedsMaxGenders((MsgSelectNode) caseNodeChild, depth + 1);
+            if (!validSubtree) {
+              return false;
+            }
+          }
+        }
+      }
+    }
+    return true;
+  }
 
   // -----------------------------------------------------------------------------------------------
   // Fallback implementation.
@@ -177,7 +198,7 @@ final class RewriteGenderMsgsVisitor extends AbstractSoyNodeVisitor<Void> {
 
   @Override protected void visitSoyNode(SoyNode node) {
     if (node instanceof ParentSoyNode<?>) {
-      visitChildrenAllowingConcurrentModification((ParentSoyNode<?>) node);
+      visitChildren((ParentSoyNode<?>) node);
     }
   }
 

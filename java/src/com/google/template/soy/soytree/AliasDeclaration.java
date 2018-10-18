@@ -18,47 +18,22 @@ package com.google.template.soy.soytree;
 
 import static com.google.common.base.Preconditions.checkArgument;
 
-import com.google.template.soy.base.SourceLocation;
-import com.google.template.soy.base.internal.BaseUtils;
-import com.google.template.soy.error.ErrorReporter;
-import com.google.template.soy.error.SoyErrorKind;
+import com.google.auto.value.AutoValue;
+import com.google.template.soy.base.internal.Identifier;
+import com.google.template.soy.base.internal.Identifier.Type;
 
 /** An {@code {alias ..}} declaration. */
-public final class AliasDeclaration {
-  private static final SoyErrorKind INVALID_ALIAS_NAME =
-      SoyErrorKind.of("An alias must be a single identifier. Found ''{0}''.");
+@AutoValue
+public abstract class AliasDeclaration {
 
-  private final String namespace;
-  private final String alias;
-  private final SourceLocation location;
-
-  public AliasDeclaration(
-      String namespace, String alias, ErrorReporter errorReporter, SourceLocation location) {
-    checkArgument(BaseUtils.isDottedIdentifier(namespace));
-    checkArgument(BaseUtils.isDottedIdentifier(alias));
-    this.namespace = namespace;
-    this.alias = alias;
-    this.location = location;
-    // The parser parses this as DOTTED_IDENT, but here we need to ensure that there are no '.'s
-    if (!BaseUtils.isIdentifier(alias)) {
-      errorReporter.report(location, INVALID_ALIAS_NAME, alias);
-    }
+  public static AliasDeclaration create(Identifier namespace, Identifier alias) {
+    checkArgument(namespace.type() != Type.DOT_IDENT);
+    checkArgument(alias.type() == Type.SINGLE_IDENT);
+    return new AutoValue_AliasDeclaration(namespace, alias);
   }
 
-  public AliasDeclaration(
-      String namespace, ErrorReporter errorReporter, SourceLocation location) {
-    this(namespace, BaseUtils.extractPartAfterLastDot(namespace), errorReporter, location);
-  }
+  public abstract Identifier namespace();
 
-  public String getNamespace() {
-    return namespace;
-  }
-
-  public String getAlias() {
-    return alias;
-  }
-
-  public SourceLocation getLocation() {
-    return location;
-  }
+  /** The alias itself (either following `as` or the last word in the aliased identifier) */
+  public abstract Identifier alias();
 }

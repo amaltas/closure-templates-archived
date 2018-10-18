@@ -17,15 +17,10 @@
 package com.google.template.soy.incrementaldomsrc;
 
 import com.google.template.soy.incrementaldomsrc.GenIncrementalDomExprsVisitor.GenIncrementalDomExprsVisitorFactory;
+import com.google.template.soy.jssrc.SoyJsSrcOptions;
+import com.google.template.soy.jssrc.dsl.CodeChunk;
 import com.google.template.soy.jssrc.internal.GenCallCodeUtils;
-import com.google.template.soy.jssrc.internal.JsExprTranslator;
-import com.google.template.soy.jssrc.restricted.JsExpr;
-import com.google.template.soy.jssrc.restricted.SoyJsSrcPrintDirective;
 import com.google.template.soy.soytree.CallParamContentNode;
-
-import java.util.Map;
-
-import javax.inject.Inject;
 
 /**
  * Extends {@link GenCallCodeUtils} to not wrap function arguments as sanitized content, which is
@@ -34,29 +29,22 @@ import javax.inject.Inject;
  */
 final class IncrementalDomGenCallCodeUtils extends GenCallCodeUtils {
 
-  /**
-   * @param jsExprTranslator Instance of JsExprTranslator to use.
-   * @param isComputableAsIncrementalDomExprsVisitor The isComputableAsIncrementalDomExprsVisitor
-   *     to be used.
-   * @param genIncrementalDomExprsVisitorFactory for creating an instance of
-   *     GenIncrementalDomExprsVisitor.
-   */
-  @Inject
   IncrementalDomGenCallCodeUtils(
-      Map<String, SoyJsSrcPrintDirective> soyJsSrcDirectivesMap,
-      JsExprTranslator jsExprTranslator,
+      SoyJsSrcOptions options,
       IncrementalDomDelTemplateNamer incrementalDomDelTemplateNamer,
       IsComputableAsIncrementalDomExprsVisitor isComputableAsIncrementalDomExprsVisitor,
       GenIncrementalDomExprsVisitorFactory genIncrementalDomExprsVisitorFactory) {
-    super(soyJsSrcDirectivesMap,
-        jsExprTranslator,
+    super(
+        options,
         incrementalDomDelTemplateNamer,
         isComputableAsIncrementalDomExprsVisitor,
         genIncrementalDomExprsVisitorFactory);
   }
 
-  @Override protected JsExpr maybeWrapContent(CallParamContentNode node, JsExpr valueJsExpr) {
-    return valueJsExpr;
+  /** Never wrap contents as SanitizedContent. */
+  @Override
+  protected CodeChunk.WithValue maybeWrapContent(
+      CodeChunk.Generator generator, CallParamContentNode node, CodeChunk.WithValue content) {
+    return content;
   }
 }
-

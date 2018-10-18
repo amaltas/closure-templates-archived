@@ -18,28 +18,23 @@ package com.google.template.soy.passes;
 
 import com.google.common.collect.ImmutableList;
 import com.google.template.soy.SoyFileSetParserBuilder;
-import com.google.template.soy.error.FormattingErrorReporter;
-import com.google.template.soy.passes.AssertStrictAutoescapingVisitor;
+import com.google.template.soy.error.ErrorReporter;
+import com.google.template.soy.error.SoyError;
 import com.google.template.soy.soytree.SoyFileSetNode;
-
-import junit.framework.TestCase;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.JUnit4;
 
 /**
  * Unit tests for AssertStrictAutoescapingVisitor.
  *
  */
-public final class AssertStrictAutoescapingVisitorTest extends TestCase {
+@RunWith(JUnit4.class)
+public final class AssertStrictAutoescapingVisitorTest {
 
+  @Test
   public void testStrictTemplate() {
     String soyCode =
-        "{namespace foo.bar autoescape=\"strict\"}\n"
-            + "{template .foo autoescape=\"strict\"}\n"
-            + "{@param boo : ?}\n"
-            + "  {$boo}\n"
-            + "{/template}\n";
-    doesntCauseStrictException(soyCode);
-
-    soyCode =
         "{namespace foo.bar}\n"
             + "{template .foo}\n"
             + "{@param boo : ?}\n"
@@ -48,30 +43,11 @@ public final class AssertStrictAutoescapingVisitorTest extends TestCase {
     doesntCauseStrictException(soyCode);
   }
 
-  public void testNonStrictNamespace() {
-    String soyCode =
-        "{namespace foo.bar autoescape=\"deprecated-contextual\"}\n"
-            + "{template .foo autoescape=\"strict\"}\n"
-            + "{@param boo : ?}\n"
-            + "  {$boo}\n"
-            + "{/template}\n";
-    causesStrictException(soyCode);
-  }
-
+  @Test
   public void testNonStrictTemplate() {
     String soyCode =
-        "{namespace foo.bar autoescape=\"strict\"}\n"
+        "{namespace foo.bar}\n"
             + "{template .foo autoescape=\"deprecated-contextual\"}\n"
-            + "{@param boo : ?}\n"
-            + "  {$boo}\n"
-            + "{/template}\n";
-    causesStrictException(soyCode);
-  }
-
-  public void testNonDeclaredTemplate() {
-    String soyCode =
-        "{namespace foo.bar autoescape=\"deprecated-noncontextual\"}\n"
-            + "{template .foo}\n"
             + "{@param boo : ?}\n"
             + "  {$boo}\n"
             + "{/template}\n";
@@ -84,7 +60,7 @@ public final class AssertStrictAutoescapingVisitorTest extends TestCase {
    * @param soyCode The input code.
    */
   private void doesntCauseStrictException(String soyCode) {
-    ImmutableList<String> errors = parseAndGetErrors(soyCode);
+    ImmutableList<SoyError> errors = parseAndGetErrors(soyCode);
     if (!errors.isEmpty()) {
       throw new AssertionError(
           "Expected:\n" + soyCode + "\n to parse successfully, but got: " + errors);
@@ -97,9 +73,11 @@ public final class AssertStrictAutoescapingVisitorTest extends TestCase {
    * @param soyCode The input code.
    */
   private void causesStrictException(String soyCode) {
-    ImmutableList<String> errors = parseAndGetErrors(soyCode);
-    for (String error : errors) {
-      if (!error.equals("Invalid use of non-strict when strict autoescaping is required.")) {
+    ImmutableList<SoyError> errors = parseAndGetErrors(soyCode);
+    for (SoyError error : errors) {
+      if (!error
+          .message()
+          .equals("Invalid use of non-strict when strict autoescaping is required.")) {
         throw new AssertionError("Found unexpected error message: " + error);
       }
     }
@@ -108,14 +86,14 @@ public final class AssertStrictAutoescapingVisitorTest extends TestCase {
     }
   }
 
-  private ImmutableList<String> parseAndGetErrors(String soyCode) {
-    FormattingErrorReporter errorReporter = new FormattingErrorReporter();
+  private ImmutableList<SoyError> parseAndGetErrors(String soyCode) {
+    ErrorReporter errorReporter = ErrorReporter.createForTest();
     SoyFileSetNode soyTree =
         SoyFileSetParserBuilder.forFileContents(soyCode)
             .errorReporter(errorReporter)
             .parse()
             .fileSet();
     new AssertStrictAutoescapingVisitor(errorReporter).exec(soyTree);
-    return errorReporter.getErrorMessages();
+    return errorReporter.getErrors();
   }
 }

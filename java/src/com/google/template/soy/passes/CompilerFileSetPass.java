@@ -19,9 +19,9 @@ package com.google.template.soy.passes;
 import com.google.template.soy.soytree.SoyFileSetNode;
 import com.google.template.soy.soytree.TemplateRegistry;
 
-/** 
+/**
  * A pass that runs over the entire {@link SoyFileSetNode}.
- * 
+ *
  * <p>Prefer implementing {@link CompilerFilePass} whenever possible. This should only be used for
  * passes that need to access transitive callee information.
  */
@@ -34,5 +34,10 @@ abstract class CompilerFileSetPass {
       return simpleName.substring(0, simpleName.length() - "Pass".length());
     }
     return simpleName;
+  }
+
+  @Override
+  public String toString() {
+    return name();
   }
 }

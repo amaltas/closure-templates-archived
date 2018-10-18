@@ -17,39 +17,29 @@
 package com.google.template.soy.error;
 
 import com.google.auto.value.AutoValue;
+import com.google.common.base.Optional;
+import com.google.common.collect.ComparisonChain;
 import com.google.template.soy.base.SourceLocation;
 
-/**
- * A structured error object for reporting
- */
+/** A structured error object for reporting */
 @AutoValue
-public abstract class SoyError {
-  /** A factory for constructing Errors.  Typically this is used to apply formatting. */
-  public interface Factory {
-    SoyError create(SourceLocation location, SoyErrorKind kind, Object ...args);
-  }
+public abstract class SoyError implements Comparable<SoyError> {
 
-  /** provides a default implementation for tests. */
-  public static final Factory DEFAULT_FACTORY =
-      new Factory() {
-        @Override
-        public SoyError create(SourceLocation location, SoyErrorKind kind, Object... args) {
-          String message = kind.format(args);
-          return createError(location, kind, message, "In file " + location + ": " + message);
-        }
-      };
-
-  static SoyError createError(
-      SourceLocation location, SoyErrorKind kind, String message, String formattedError) {
-    return new AutoValue_SoyError(location, kind, message, formattedError);
+  static SoyError create(
+      SourceLocation location,
+      SoyErrorKind kind,
+      String message,
+      Optional<String> snippet,
+      boolean isWarning) {
+    return new AutoValue_SoyError(location, kind, message, snippet, isWarning);
   }
 
   SoyError() {} // package private to prevent external subclassing
 
-  /** The location where the error occured. */
+  /** The location where the error occurred. */
   public abstract SourceLocation location();
 
-  /** The error kind.  For classification usecases. */
+  /** The error kind. For classification usecases. */
   public abstract SoyErrorKind errorKind();
 
   /**
@@ -60,13 +50,31 @@ public abstract class SoyError {
   public abstract String message();
 
   // Should be accessed via toString()
-  abstract String formattedMessage();
+  abstract Optional<String> snippet();
 
-  /**
-   * The full formatted error.
-   */
+  /** Whether or not this error should be considered a warning (i.e., don't fail the build). */
+  public abstract boolean isWarning();
+
+  /** The full formatted error. */
   @Override
   public String toString() {
-    return formattedMessage();
+    return location().getFilePath()
+        + ':'
+        + location().getBeginLine()
+        + ": "
+        + (isWarning() ? "warning" : "error")
+        + ": "
+        + message()
+        + "\n"
+        + snippet().or("");
+  }
+
+  @Override
+  public int compareTo(SoyError o) {
+    // TODO(user): use Comparator.comparing(...)
+    return ComparisonChain.start()
+        .compare(location(), o.location())
+        .compare(message(), o.message())
+        .result();
   }
 }

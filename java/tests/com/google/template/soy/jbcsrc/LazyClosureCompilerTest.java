@@ -17,7 +17,7 @@
 package com.google.template.soy.jbcsrc;
 
 import static com.google.common.truth.Truth.assertThat;
-import static com.google.template.soy.data.SoyValueHelper.EMPTY_DICT;
+import static com.google.template.soy.data.SoyValueConverter.EMPTY_DICT;
 import static com.google.template.soy.jbcsrc.TemplateTester.asRecord;
 import static com.google.template.soy.jbcsrc.TemplateTester.assertThatTemplateBody;
 import static com.google.template.soy.jbcsrc.TemplateTester.compileTemplateBody;
@@ -25,97 +25,128 @@ import static com.google.template.soy.jbcsrc.TemplateTester.getDefaultContext;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.util.concurrent.SettableFuture;
+import com.google.template.soy.data.LoggingAdvisingAppendable;
+import com.google.template.soy.data.LoggingAdvisingAppendable.BufferingAppendable;
+import com.google.template.soy.data.SoyValue;
 import com.google.template.soy.jbcsrc.TemplateTester.CompiledTemplateSubject;
-import com.google.template.soy.jbcsrc.api.AdvisingStringBuilder;
 import com.google.template.soy.jbcsrc.api.RenderResult;
 import com.google.template.soy.jbcsrc.shared.CompiledTemplate;
 import com.google.template.soy.jbcsrc.shared.CompiledTemplates;
 import com.google.template.soy.jbcsrc.shared.RenderContext;
-
-import junit.framework.TestCase;
-
+import com.google.template.soy.shared.restricted.SoyJavaFunction;
 import java.io.IOException;
+import java.lang.reflect.Constructor;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.JUnit4;
 
-/**
- * Tests for {@link LazyClosureCompiler}.
- */
-public class LazyClosureCompilerTest extends TestCase {
+/** Tests for {@link LazyClosureCompiler}. */
+@RunWith(JUnit4.class)
+public class LazyClosureCompilerTest {
+  @Test
   public void testLetContentNode() {
-    assertThatTemplateBody(
-        "{let $foo}",
-        "  foo bar baz",
-        "{/let}",
-        "{$foo}").rendersAs("foo bar baz");
+    assertThatTemplateBody("{let $foo kind=\"text\"}", "  foo bar baz", "{/let}", "{$foo}")
+        .rendersAs("foo bar baz");
   }
-  
+
+  @Test
   public void testLetContentNode_typed() {
-    assertThatTemplateBody(
-        "{let $foo kind=\"html\"}",
-        "  foo bar baz",
-        "{/let}",
-        "{$foo}").rendersAs("foo bar baz");
+    assertThatTemplateBody("{let $foo kind=\"html\"}", "  foo bar baz", "{/let}", "{$foo}")
+        .rendersAs("foo bar baz");
   }
-  
+
+  @Test
   public void testLetNodes_nested() {
     assertThatTemplateBody(
-        "{let $foo}",
-        "  {let $foo}foo bar baz{/let}",
-        "  {$foo}",
-        "{/let}",
-        "{$foo}").rendersAs("foo bar baz");
+            "{let $foo kind=\"text\"}",
+            "  {let $foo kind=\"text\"}foo bar baz{/let}",
+            "  {$foo}",
+            "{/let}",
+            "{$foo}")
+        .rendersAs("foo bar baz");
   }
 
+  @Test
   public void testLetContentNode_detaching() throws IOException {
     SettableFuture<String> bar = SettableFuture.create();
     CompiledTemplates templates =
         compileTemplateBody(
-            "{@param bar : string }", "{let $foo}", "  hello {$bar}", "{/let}", "{$foo}");
+            "{@param bar : string }",
+            "{let $foo kind=\"text\"}",
+            "  hello {$bar}",
+            "{/let}",
+            "{$foo}");
     CompiledTemplate.Factory factory = templates.getTemplateFactory("ns.foo");
     RenderContext context = getDefaultContext(templates);
     CompiledTemplate template = factory.create(asRecord(ImmutableMap.of("bar", bar)), EMPTY_DICT);
-    AdvisingStringBuilder output = new AdvisingStringBuilder();
+    BufferingAppendable output = LoggingAdvisingAppendable.buffering();
     RenderResult result = template.render(output, context);
-    assertEquals(RenderResult.Type.DETACH, result.type());
-    assertSame(bar, result.future());  // we found bar!
-    assertEquals("hello ", output.toString());
+    assertThat(result.type()).isEqualTo(RenderResult.Type.DETACH);
+    assertThat(result.future()).isSameAs(bar); // we found bar!
+    assertThat(output.toString()).isEqualTo("hello ");
 
     // make sure no progress is made
     result = template.render(output, context);
-    assertEquals(RenderResult.Type.DETACH, result.type());
-    assertSame(bar, result.future());
-    assertEquals("hello ", output.toString());
+    assertThat(result.type()).isEqualTo(RenderResult.Type.DETACH);
+    assertThat(result.future()).isSameAs(bar);
+    assertThat(output.toString()).isEqualTo("hello ");
     bar.set("bar");
 
-    assertEquals(RenderResult.done(), template.render(output, context));
-    assertEquals("hello bar", output.toString());
+    assertThat(template.render(output, context)).isEqualTo(RenderResult.done());
+    assertThat(output.toString()).isEqualTo("hello bar");
   }
 
+  @Test
   public void testLetValueNode() {
-    assertThatTemplateBody(
-        "{let $foo : 1+2 /}",
-        "{$foo}").rendersAs("3");
-    
-    assertThatTemplateBody(
-        "{let $null : null /}",
-        "{$null}").rendersAs("null");
-    
-    assertThatTemplateBody(
-        "{let $bar : 'a' /}",
-        "{let $foo : $bar + 'b' /}",
-        "{$foo}").rendersAs("ab");
+    assertThatTemplateBody("{let $foo : 1+2 /}", "{$foo}").rendersAs("3");
+
+    assertThatTemplateBody("{let $null : null /}", "{$null}").rendersAs("null");
+
+    assertThatTemplateBody("{let $bar : 'a' /}", "{let $foo : $bar + 'b' /}", "{$foo}")
+        .rendersAs("ab");
   }
 
+  @Test
   public void testLetValueNode_captureParameter() {
-    assertThatTemplateBody(
-        "{@param param: string}",
-        "{let $foo : $param + '_suffix' /}",
-        "{$foo}").rendersAs("string_suffix", ImmutableMap.of("param", "string"));
+    assertThatTemplateBody("{@param param: string}", "{let $foo : $param + '_suffix' /}", "{$foo}")
+        .rendersAs("string_suffix", ImmutableMap.of("param", "string"));
   }
 
+  // Regression test for a bug where captures of synthetic variables wouldn't be deduped properly
+  // and we would recapture the same synthetic multiple times.
+  @Test
+  public void testLetValueNode_captureSyntheticParameter() {
+    // make sure that if we capture a synthetic we only capture it once
+    CompiledTemplates templates =
+        compileTemplateBody(
+            "{@param l : list<string>}",
+            "{for $s in $l}",
+            // the index function is implemented via a synthetic loop index
+            "  {let $bar : index($s) + index($s) /}",
+            "  {$bar}",
+            "{/for}");
+    CompiledTemplate.Factory factory = templates.getTemplateFactory("ns.foo");
+    CompiledTemplate template = factory.create(EMPTY_DICT, EMPTY_DICT);
+    List<Class<?>> innerClasses = Lists.newArrayList(template.getClass().getDeclaredClasses());
+    innerClasses.remove(factory.getClass());
+    Class<?> let = Iterables.getOnlyElement(innerClasses);
+    assertThat(let.getSimpleName()).isEqualTo("let_bar");
+    // the closures capture variables as constructor parameters.
+    // in this case since index() always returns an unboxed integer the parameter should be a single
+    // int.  In a previous version, we passed 2 ints.
+    assertThat(let.getDeclaredConstructors()).hasLength(1);
+    Constructor<?> cStruct = let.getDeclaredConstructors()[0];
+    assertThat(Arrays.asList(cStruct.getParameterTypes())).isEqualTo(Arrays.asList(int.class));
+  }
+
+  @Test
   public void testLetValueNode_nullableParameter() {
     CompiledTemplateSubject tester =
         assertThatTemplateBody(
@@ -127,6 +158,7 @@ public class LazyClosureCompilerTest extends TestCase {
     tester.rendersAs("false", ImmutableMap.<String, Object>of("param", false));
   }
 
+  @Test
   public void testLetValueNode_nullableString() {
     CompiledTemplateSubject tester =
         assertThatTemplateBody(
@@ -140,6 +172,7 @@ public class LazyClosureCompilerTest extends TestCase {
     tester.rendersAs("2", ImmutableMap.<String, Object>of("param2", "2"));
   }
 
+  @Test
   public void testLetValueNode_optionalInts() {
     CompiledTemplateSubject tester =
         assertThatTemplateBody(
@@ -155,6 +188,7 @@ public class LazyClosureCompilerTest extends TestCase {
         "3", ImmutableMap.of("comments", ImmutableList.of("a", "b", "c", "d"), "numComments", 1));
   }
 
+  @Test
   public void testDetachOnFutureLazily() throws IOException {
     SettableFuture<String> bar = SettableFuture.create();
     CompiledTemplates templates =
@@ -163,35 +197,77 @@ public class LazyClosureCompilerTest extends TestCase {
     CompiledTemplate.Factory factory = templates.getTemplateFactory("ns.foo");
     RenderContext context = getDefaultContext(templates);
     CompiledTemplate template = factory.create(asRecord(ImmutableMap.of("bar", bar)), EMPTY_DICT);
-    AdvisingStringBuilder output = new AdvisingStringBuilder();
+    BufferingAppendable output = LoggingAdvisingAppendable.buffering();
     RenderResult result = template.render(output, context);
-    assertEquals(RenderResult.Type.DETACH, result.type());
-    assertSame(bar, result.future());  // we found bar!
-    assertEquals("before use", output.toString());
-    
+    assertThat(result.type()).isEqualTo(RenderResult.Type.DETACH);
+    assertThat(result.future()).isSameAs(bar); // we found bar!
+    assertThat(output.toString()).isEqualTo("before use");
+
     // make sure no progress is made
     result = template.render(output, context);
-    assertEquals(RenderResult.Type.DETACH, result.type());
-    assertSame(bar, result.future());
-    assertEquals("before use", output.toString());
+    assertThat(result.type()).isEqualTo(RenderResult.Type.DETACH);
+    assertThat(result.future()).isSameAs(bar);
+    assertThat(output.toString()).isEqualTo("before use");
     bar.set(" bar");
 
-    assertEquals(RenderResult.done(), template.render(output, context));
-    assertEquals("before use bar bar", output.toString());
+    assertThat(template.render(output, context)).isEqualTo(RenderResult.done());
+    assertThat(output.toString()).isEqualTo("before use bar bar");
   }
 
+  @Test
   public void testLetValueNodeStructure() {
     // make sure we don't break normal reflection apis
     CompiledTemplates templates =
         compileTemplateBody("{let $bar : 'a' /}", "{let $foo : $bar + 1 /}");
     CompiledTemplate.Factory factory = templates.getTemplateFactory("ns.foo");
     CompiledTemplate template = factory.create(EMPTY_DICT, EMPTY_DICT);
-    
-    assertThat(template.getClass().getDeclaredClasses()).asList().hasSize(2);
+
+    assertThat(template.getClass().getDeclaredClasses()).hasLength(2);
     List<Class<?>> innerClasses = Lists.newArrayList(template.getClass().getDeclaredClasses());
     innerClasses.remove(factory.getClass());
     Class<?> let = Iterables.getOnlyElement(innerClasses);
-    assertEquals("let_foo", let.getSimpleName());
-    assertEquals(template.getClass(), let.getDeclaringClass());
+    assertThat(let.getSimpleName()).isEqualTo("let_foo");
+    assertThat(let.getDeclaringClass()).isEqualTo(template.getClass());
+  }
+
+  private static final class IdentityFunction implements SoyJavaFunction {
+    @Override
+    public String getName() {
+      return "ident";
+    }
+
+    @Override
+    public Set<Integer> getValidArgsSizes() {
+      return ImmutableSet.of(1);
+    }
+
+    @Override
+    public SoyValue computeForJava(List<SoyValue> args) {
+      return args.get(0);
+    }
+  }
+
+  @Test
+  public void testConstantPluginFunction() {
+    // There used to be a bug where we wouldn't properly box the expression into a SoyValueProvider
+    // when it dynamically resolved to null.
+    assertThatTemplateBody("{let $foo : ident(null) /}{$foo}")
+        .withSoyFunction(new IdentityFunction())
+        .rendersAs("null");
+    assertThatTemplateBody("{let $foo : ident(1) /}{$foo}")
+        .withSoyFunction(new IdentityFunction())
+        .rendersAs("1");
+  }
+
+  @Test
+  public void testNullValue() {
+    assertThatTemplateBody(
+            "{let $null1 : null /}"
+                + "{let $null2 : $null1 /}"
+                + "{let $null3 : $null2 /}"
+                + "{let $null4 : $null3 /}"
+                + "{let $null5 : $null4 /}"
+                + "{$null5}")
+        .rendersAs("null");
   }
 }

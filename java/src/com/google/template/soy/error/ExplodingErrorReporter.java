@@ -16,39 +16,61 @@
 
 package com.google.template.soy.error;
 
+import static com.google.common.base.Preconditions.checkNotNull;
+
+import com.google.common.collect.ImmutableList;
 import com.google.template.soy.base.SourceLocation;
 
 /**
- * {@link ErrorReporter} implementation that throws an {@link AssertionError} whenever an error
- * is reported to it. This should only be used when no errors are expected.  This is seldom
- * desirable in production code, but often desirable in tests, which should fail in the presence
- * of any errors that are not specifically checked for.
+ * {@link ErrorReporter} implementation that throws an {@link AssertionError} whenever an error is
+ * reported to it. This should only be used when no errors are expected. This is seldom desirable in
+ * production code, but often desirable in tests, which should fail in the presence of any errors
+ * that are not specifically checked for.
  *
- * <p>To write a test that does not have this exploding behavior (for example, a test that needs
- * to check the full list of errors encountered during compilation), pass a non-exploding
- * ErrorReporter instance to
- * {@link com.google.template.soy.SoyFileSetParserBuilder#errorReporter}.
+ * <p>To write a test that does not have this exploding behavior (for example, a test that needs to
+ * check the full list of errors encountered during compilation), pass a non-exploding ErrorReporter
+ * instance to {@link com.google.template.soy.SoyFileSetParserBuilder#errorReporter}.
  *
  * @author brndn@google.com (Brendan Linn)
  */
-public final class ExplodingErrorReporter extends AbstractErrorReporter {
+final class ExplodingErrorReporter extends ErrorReporter {
+  static final ErrorReporter EXPLODING = new ExplodingErrorReporter(false);
+  static final ErrorReporter EXPLODING_IGNORE_WARNINGS = new ExplodingErrorReporter(true);
 
-  private static final ErrorReporter INSTANCE = new ExplodingErrorReporter();
-  
-  public static ErrorReporter get() {
-    return INSTANCE;
+  private final boolean ignoreWarnings;
+
+  private ExplodingErrorReporter(boolean ignoreWarnings) {
+    this.ignoreWarnings = ignoreWarnings;
   }
-
-  private ExplodingErrorReporter() {}
 
   @Override
   public void report(SourceLocation sourceLocation, SoyErrorKind error, Object... args) {
+    checkNotNull(sourceLocation);
     throw new AssertionError(
-        String.format("Unexpected SoyError: %s at %s", error.format(args), sourceLocation));
+        String.format("Unexpected error: %s at %s", error.format(args), sourceLocation));
   }
 
   @Override
-  protected int getCurrentNumberOfErrors() {
+  public void warn(SourceLocation sourceLocation, SoyErrorKind error, Object... args) {
+    checkNotNull(sourceLocation);
+    if (!ignoreWarnings) {
+      throw new AssertionError(
+          String.format("Unexpected warning: %s at %s", error.format(args), sourceLocation));
+    }
+  }
+
+  @Override
+  int getCurrentNumberOfErrors() {
     return 0;
+  }
+
+  @Override
+  public ImmutableList<SoyError> getErrors() {
+    return ImmutableList.of();
+  }
+
+  @Override
+  public ImmutableList<SoyError> getWarnings() {
+    return ImmutableList.of();
   }
 }

@@ -16,32 +16,45 @@
 
 package com.google.template.soy.shared.internal;
 
-import com.google.common.base.CaseFormat;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.template.soy.shared.restricted.SoyFunction;
-
-import java.util.Map;
 import java.util.Set;
-
+import javax.annotation.Nullable;
 
 /**
  * Enum of built-in functions supported in Soy expressions.
  *
- * <p> Important: Do not use outside of Soy code (treat as superpackage-private).
+ * <p>Important: Do not use outside of Soy code (treat as superpackage-private).
  *
  */
 public enum BuiltinFunction implements SoyFunction {
+  IS_FIRST("isFirst"),
+  IS_LAST("isLast"),
+  INDEX("index"),
+  QUOTE_KEYS_IF_JS("quoteKeysIfJs"),
+  CHECK_NOT_NULL("checkNotNull"),
+  /**
+   * Function for substituting CSS class names according to a lookup map.
+   *
+   * <p>Takes 1 or 2 arguments: an optional prefix (if present, this is the first arg), followed by
+   * a string literal selector name.
+   */
+  CSS("css"),
+  XID("xid"),
+  V1_EXPRESSION("v1Expression"),
+  REMAINDER("remainder"),
+  MSG_ID("msgId"),
+  IS_PRIMARY_MSG_IN_USE("$$isPrimaryMsgInUse"),
+  ;
 
-  IS_FIRST,
-  IS_LAST,
-  INDEX,
-  QUOTE_KEYS_IF_JS,
-  CHECK_NOT_NULL;
-
+  public static ImmutableSet<String> names() {
+    return NONPLUGIN_FUNCTIONS_BY_NAME.keySet();
+  }
 
   /** Map of NonpluginFunctions by function name. */
-  private static final Map<String, BuiltinFunction> NONPLUGIN_FUNCTIONS_BY_NAME;
+  private static final ImmutableMap<String, BuiltinFunction> NONPLUGIN_FUNCTIONS_BY_NAME;
+
   static {
     ImmutableMap.Builder<String, BuiltinFunction> mapBuilder = ImmutableMap.builder();
     for (BuiltinFunction nonpluginFn : values()) {
@@ -50,21 +63,21 @@ public enum BuiltinFunction implements SoyFunction {
     NONPLUGIN_FUNCTIONS_BY_NAME = mapBuilder.build();
   }
 
-
   /**
    * Returns the NonpluginFunction for the given function name, or null if not found.
+   *
    * @param functionName The function name to retrieve.
    */
+  @Nullable
   public static BuiltinFunction forFunctionName(String functionName) {
     return NONPLUGIN_FUNCTIONS_BY_NAME.get(functionName);
   }
 
-
   /** The function name. */
   private final String functionName;
 
-  BuiltinFunction() {
-    this.functionName = CaseFormat.UPPER_UNDERSCORE.to(CaseFormat.LOWER_CAMEL, name());
+  BuiltinFunction(String name) {
+    this.functionName = name;
   }
 
   @Override
@@ -74,6 +87,13 @@ public enum BuiltinFunction implements SoyFunction {
 
   @Override
   public Set<Integer> getValidArgsSizes() {
-    return ImmutableSet.of(1); // All built-in functions are unary.
+    switch (this) {
+      case CSS:
+        return ImmutableSet.of(1, 2);
+      case IS_PRIMARY_MSG_IN_USE:
+        return ImmutableSet.of(3);
+      default:
+        return ImmutableSet.of(1);
+    }
   }
 }

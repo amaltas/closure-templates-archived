@@ -17,9 +17,10 @@
 package com.google.template.soy.sharedpasses.render;
 
 import com.google.template.soy.data.SoyRecord;
-import com.google.template.soy.data.SoyValueHelper;
+import com.google.template.soy.msgs.SoyMsgBundle;
+import com.google.template.soy.shared.SoyCssRenamingMap;
+import com.google.template.soy.shared.SoyIdRenamingMap;
 import com.google.template.soy.sharedpasses.render.EvalVisitor.EvalVisitorFactory;
-
 import javax.annotation.Nullable;
 import javax.inject.Inject;
 import javax.inject.Singleton;
@@ -27,21 +28,24 @@ import javax.inject.Singleton;
 /**
  * Default implementation of EvalVisitorFactory.
  *
- * <p> Important: Do not use outside of Soy code (treat as superpackage-private).
+ * <p>Important: Do not use outside of Soy code (treat as superpackage-private).
  *
  */
 @Singleton
 public final class EvalVisitorFactoryImpl implements EvalVisitorFactory {
 
-  /** Instance of SoyValueHelper to use. */
-  private final SoyValueHelper valueHelper;
-
   @Inject
-  public EvalVisitorFactoryImpl(SoyValueHelper valueHelper) {
-    this.valueHelper = valueHelper;
-  }
+  public EvalVisitorFactoryImpl() {}
 
-  @Override public EvalVisitor create(@Nullable SoyRecord ijData, Environment env) {
-    return new EvalVisitor(valueHelper, ijData, env);
+  @Override
+  public EvalVisitor create(
+      Environment env,
+      @Nullable SoyRecord ijData,
+      @Nullable SoyCssRenamingMap cssRenamingMap,
+      @Nullable SoyIdRenamingMap xidRenamingMap,
+      @Nullable SoyMsgBundle msgBundle,
+      boolean debugSoyTemplateInfo) {
+    return new EvalVisitor(
+        env, ijData, cssRenamingMap, xidRenamingMap, msgBundle, debugSoyTemplateInfo);
   }
 }

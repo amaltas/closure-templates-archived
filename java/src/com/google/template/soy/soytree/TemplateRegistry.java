@@ -23,41 +23,44 @@ import com.google.common.collect.HashMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Multimap;
-import com.google.template.soy.data.SanitizedContent.ContentKind;
+import com.google.template.soy.base.internal.SanitizedContentKind;
 import com.google.template.soy.error.ErrorReporter;
 import com.google.template.soy.error.SoyErrorKind;
+import com.google.template.soy.error.SoyErrorKind.StyleAllowance;
 import com.google.template.soy.shared.internal.DelTemplateSelector;
 import com.google.template.soy.soytree.TemplateDelegateNode.DelTemplateKey;
-
 import java.util.LinkedHashMap;
 import java.util.Map;
-
 import javax.annotation.Nullable;
 
 /**
  * A registry or index of all templates in a Soy tree.
  *
- * <p> Important: Do not use outside of Soy code (treat as superpackage-private).
+ * <p>Important: Do not use outside of Soy code (treat as superpackage-private).
  *
  */
 public final class TemplateRegistry {
 
   private static final SoyErrorKind DUPLICATE_TEMPLATES =
-      SoyErrorKind.of("Template ''{0}'' already defined at {1}");
+      SoyErrorKind.of("Template ''{0}'' already defined at {1}.");
   private static final SoyErrorKind BASIC_AND_DELTEMPLATE_WITH_SAME_NAME =
       SoyErrorKind.of("Found deltemplate {0} with the same name as a basic template at {1}.");
   private static final SoyErrorKind DUPLICATE_DEFAULT_DELEGATE_TEMPLATES =
-      SoyErrorKind.of("Delegate template ''{0}'' already has a default defined at {1}");
+      SoyErrorKind.of("Delegate template ''{0}'' already has a default defined at {1}.");
   private static final SoyErrorKind DUPLICATE_DELEGATE_TEMPLATES_IN_DELPACKAGE =
-      SoyErrorKind.of("Delegate template ''{0}'' already defined in delpackage {1}: {2}");
+      SoyErrorKind.of(
+          "Delegate template ''{0}'' already defined in delpackage {1}: {2}",
+          StyleAllowance.NO_PUNCTUATION);
 
   /** Map from basic template name to node. */
   private final ImmutableMap<String, TemplateBasicNode> basicTemplatesMap;
+
   private final DelTemplateSelector<TemplateDelegateNode> delTemplateSelector;
   private final ImmutableList<TemplateNode> allTemplates;
 
   /**
    * Constructor.
+   *
    * @param soyTree The Soy tree from which to build a template registry.
    */
   public TemplateRegistry(SoyFileSetNode soyTree, ErrorReporter errorReporter) {
@@ -73,8 +76,8 @@ public final class TemplateRegistry {
         allTemplatesBuilder.add(template);
         if (template instanceof TemplateBasicNode) {
           // Case 1: Basic template.
-          TemplateBasicNode prev = basicTemplates.put(
-              template.getTemplateName(), (TemplateBasicNode) template);
+          TemplateBasicNode prev =
+              basicTemplates.put(template.getTemplateName(), (TemplateBasicNode) template);
           if (prev != null) {
             errorReporter.report(
                 template.getSourceLocation(),
@@ -135,17 +138,14 @@ public final class TemplateRegistry {
     this.allTemplates = allTemplatesBuilder.build();
   }
 
-
-  /**
-   * Returns a map from basic template name to node.
-   */
+  /** Returns a map from basic template name to node. */
   public ImmutableMap<String, TemplateBasicNode> getBasicTemplatesMap() {
     return basicTemplatesMap;
   }
 
-
   /**
    * Retrieves a basic template given the template name.
+   *
    * @param templateName The basic template name to retrieve.
    * @return The corresponding basic template, or null if the template name is not defined.
    */
@@ -154,16 +154,14 @@ public final class TemplateRegistry {
     return basicTemplatesMap.get(templateName);
   }
 
-  /**
-   * Returns a multimap from delegate template name to set of keys.
-   */
+  /** Returns a multimap from delegate template name to set of keys. */
   public DelTemplateSelector<TemplateDelegateNode> getDelTemplateSelector() {
     return delTemplateSelector;
   }
 
   /**
-   * Returns all registered templates ({@link TemplateBasicNode basic} and
-   * {@link TemplateDelegateNode delegate} nodes), in no particular order.
+   * Returns all registered templates ({@link TemplateBasicNode basic} and {@link
+   * TemplateDelegateNode delegate} nodes), in no particular order.
    */
   public ImmutableList<TemplateNode> getAllTemplates() {
     return allTemplates;
@@ -193,10 +191,11 @@ public final class TemplateRegistry {
    * Gets the content kind that a call results in. If used with delegate calls, the delegate
    * templates must use strict autoescaping. This relies on the fact that all delegate calls must
    * have the same kind when using strict autoescaping. This is enforced by CheckDelegatesVisitor.
+   *
    * @param node The {@link CallBasicNode} or {@link CallDelegateNode}.
    * @return The kind of content that the call results in.
    */
-  public Optional<ContentKind> getCallContentKind(CallNode node) {
+  public Optional<SanitizedContentKind> getCallContentKind(CallNode node) {
     TemplateNode templateNode = null;
 
     if (node instanceof CallBasicNode) {
@@ -204,9 +203,8 @@ public final class TemplateRegistry {
       templateNode = getBasicTemplate(calleeName);
     } else {
       String calleeName = ((CallDelegateNode) node).getDelCalleeName();
-      ImmutableList<TemplateDelegateNode> templateNodes = getDelTemplateSelector()
-          .delTemplateNameToValues()
-          .get(calleeName);
+      ImmutableList<TemplateDelegateNode> templateNodes =
+          getDelTemplateSelector().delTemplateNameToValues().get(calleeName);
       // For per-file compilation, we may not have any of the delegate templates in the compilation
       // unit.
       if (!templateNodes.isEmpty()) {

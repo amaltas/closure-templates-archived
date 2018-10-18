@@ -16,21 +16,17 @@
 
 package com.google.template.soy.jssrc.internal;
 
-import com.google.template.soy.html.AbstractReturningHtmlSoyNodeVisitor;
-import com.google.template.soy.html.HtmlAttributeNode;
-import com.google.template.soy.html.HtmlCloseTagNode;
-import com.google.template.soy.html.HtmlOpenTagEndNode;
-import com.google.template.soy.html.HtmlOpenTagNode;
-import com.google.template.soy.html.HtmlOpenTagStartNode;
-import com.google.template.soy.html.HtmlVoidTagNode;
 import com.google.template.soy.shared.internal.ApiCallScope;
+import com.google.template.soy.soytree.AbstractReturningSoyNodeVisitor;
 import com.google.template.soy.soytree.CallNode;
 import com.google.template.soy.soytree.CallParamContentNode;
 import com.google.template.soy.soytree.CallParamValueNode;
-import com.google.template.soy.soytree.CssNode;
 import com.google.template.soy.soytree.DebuggerNode;
 import com.google.template.soy.soytree.ForNode;
-import com.google.template.soy.soytree.ForeachNode;
+import com.google.template.soy.soytree.HtmlAttributeNode;
+import com.google.template.soy.soytree.HtmlAttributeValueNode;
+import com.google.template.soy.soytree.HtmlCloseTagNode;
+import com.google.template.soy.soytree.HtmlOpenTagNode;
 import com.google.template.soy.soytree.IfCondNode;
 import com.google.template.soy.soytree.IfElseNode;
 import com.google.template.soy.soytree.IfNode;
@@ -45,40 +41,34 @@ import com.google.template.soy.soytree.SoyNode;
 import com.google.template.soy.soytree.SoyNode.ParentSoyNode;
 import com.google.template.soy.soytree.SwitchNode;
 import com.google.template.soy.soytree.TemplateNode;
-import com.google.template.soy.soytree.XidNode;
-
+import com.google.template.soy.soytree.VeLogNode;
 import java.util.HashMap;
 import java.util.Map;
-
-import javax.inject.Inject;
 
 /**
  * Visitor to determine whether the output string for the subtree rooted at a given node is
  * computable as the concatenation of one or more JS expressions. If this is false, it means the
  * generated code for computing the node's output must include one or more full JS statements.
  *
- * <p> Precondition: MsgNode should not exist in the tree.
+ * <p>Precondition: MsgNode should not exist in the tree.
  *
- * <p> Important: This class is in {@link ApiCallScope} because it memoizes results that are
- * reusable for the same parse tree. If we change the parse tree between uses of the scoped
- * instance, then the results may not be correct. (In that case, we would need to take this class
- * out of {@code ApiCallScope} and rewrite the code somehow to still take advantage of the
- * memoized results to the extent that they remain correct.)
+ * <p>Important: This class is in {@link ApiCallScope} because it memoizes results that are reusable
+ * for the same parse tree. If we change the parse tree between uses of the scoped instance, then
+ * the results may not be correct. (In that case, we would need to take this class out of {@code
+ * ApiCallScope} and rewrite the code somehow to still take advantage of the memoized results to the
+ * extent that they remain correct.)
+ *
+ * <p>TODO(user): This should no longer be necessary after CodeChunk migration. Rip it all out.
  *
  */
-@ApiCallScope
-public
-class IsComputableAsJsExprsVisitor extends AbstractReturningHtmlSoyNodeVisitor<Boolean> {
+public class IsComputableAsJsExprsVisitor extends AbstractReturningSoyNodeVisitor<Boolean> {
 
   /** The memoized results of past visits to nodes. */
   private final Map<SoyNode, Boolean> memoizedResults;
 
-
-  @Inject
   protected IsComputableAsJsExprsVisitor() {
     memoizedResults = new HashMap<>();
   }
-
 
   /**
    * Executes this visitor on the children of the given node, and returns true if all children are
@@ -88,7 +78,8 @@ class IsComputableAsJsExprsVisitor extends AbstractReturningHtmlSoyNodeVisitor<B
     return areChildrenComputableAsJsExprs(node);
   }
 
-  @Override protected Boolean visit(SoyNode node) {
+  @Override
+  protected Boolean visit(SoyNode node) {
 
     if (memoizedResults.containsKey(node)) {
       return memoizedResults.get(node);
@@ -100,143 +91,129 @@ class IsComputableAsJsExprsVisitor extends AbstractReturningHtmlSoyNodeVisitor<B
     }
   }
 
-
   // -----------------------------------------------------------------------------------------------
   // Implementations for specific nodes.
 
-
-  @Override protected Boolean visitTemplateNode(TemplateNode node) {
+  @Override
+  protected Boolean visitTemplateNode(TemplateNode node) {
     return areChildrenComputableAsJsExprs(node);
   }
 
-
-  @Override protected Boolean visitRawTextNode(RawTextNode node) {
+  @Override
+  protected Boolean visitRawTextNode(RawTextNode node) {
     return true;
   }
 
-
-  @Override protected Boolean visitMsgFallbackGroupNode(MsgFallbackGroupNode node) {
+  @Override
+  protected Boolean visitMsgFallbackGroupNode(MsgFallbackGroupNode node) {
     return false;
   }
 
-
-  @Override protected Boolean visitMsgPlaceholderNode(MsgPlaceholderNode node) {
+  @Override
+  protected Boolean visitMsgPlaceholderNode(MsgPlaceholderNode node) {
     return areChildrenComputableAsJsExprs(node);
   }
 
-
-  @Override protected Boolean visitMsgHtmlTagNode(MsgHtmlTagNode node) {
+  @Override
+  protected Boolean visitMsgHtmlTagNode(MsgHtmlTagNode node) {
     return areChildrenComputableAsJsExprs(node);
   }
 
-
-  @Override protected Boolean visitPrintNode(PrintNode node) {
+  @Override
+  protected Boolean visitPrintNode(PrintNode node) {
     return true;
   }
 
 
-  @Override protected Boolean visitXidNode(XidNode node) {
-    return true;
-  }
-
-
-  @Override protected Boolean visitCssNode(CssNode node) {
-    return true;
-  }
-
-
-  @Override protected Boolean visitLetNode(LetNode node) {
+  @Override
+  protected Boolean visitLetNode(LetNode node) {
     return false;
   }
 
-
-  @Override protected Boolean visitIfNode(IfNode node) {
+  @Override
+  protected Boolean visitIfNode(IfNode node) {
     // If all children are computable as JS expressions, then this 'if' statement can be written
     // as an expression as well, using the ternary conditional operator ("? :").
     return areChildrenComputableAsJsExprs(node);
   }
 
-
-  @Override protected Boolean visitIfCondNode(IfCondNode node) {
+  @Override
+  protected Boolean visitIfCondNode(IfCondNode node) {
     return areChildrenComputableAsJsExprs(node);
   }
 
-
-  @Override protected Boolean visitIfElseNode(IfElseNode node) {
+  @Override
+  protected Boolean visitIfElseNode(IfElseNode node) {
     return areChildrenComputableAsJsExprs(node);
   }
 
-
-  @Override protected Boolean visitSwitchNode(SwitchNode node) {
+  @Override
+  protected Boolean visitSwitchNode(SwitchNode node) {
     return false;
   }
 
-
-  @Override protected Boolean visitForeachNode(ForeachNode node) {
+  @Override
+  protected Boolean visitForNode(ForNode node) {
     return false;
   }
 
-
-  @Override protected Boolean visitForNode(ForNode node) {
-    return false;
-  }
-
-
-  @Override protected Boolean visitCallNode(CallNode node) {
+  @Override
+  protected Boolean visitCallNode(CallNode node) {
     return areChildrenComputableAsJsExprs(node);
   }
 
-
-  @Override protected Boolean visitCallParamValueNode(CallParamValueNode node) {
+  @Override
+  protected Boolean visitCallParamValueNode(CallParamValueNode node) {
     return true;
   }
 
-
-  @Override protected Boolean visitCallParamContentNode(CallParamContentNode node) {
+  @Override
+  protected Boolean visitCallParamContentNode(CallParamContentNode node) {
     return areChildrenComputableAsJsExprs(node);
   }
 
-
-  @Override protected Boolean visitLogNode(LogNode node) {
+  @Override
+  protected Boolean visitLogNode(LogNode node) {
     return false;
   }
 
-
-  @Override protected Boolean visitDebuggerNode(DebuggerNode node) {
+  @Override
+  protected Boolean visitDebuggerNode(DebuggerNode node) {
     return false;
   }
 
-  @Override protected Boolean visitHtmlAttributeNode(HtmlAttributeNode node) {
+  @Override
+  protected Boolean visitHtmlAttributeValueNode(HtmlAttributeValueNode node) {
+    return areChildrenComputableAsJsExprs(node);
+  }
+
+  @Override
+  protected Boolean visitHtmlAttributeNode(HtmlAttributeNode node) {
     return false;
   }
 
-  @Override protected Boolean visitHtmlOpenTagNode(HtmlOpenTagNode node) {
+  @Override
+  protected Boolean visitHtmlOpenTagNode(HtmlOpenTagNode node) {
     return false;
   }
 
-  @Override protected Boolean visitHtmlCloseTagNode(HtmlCloseTagNode node) {
+  @Override
+  protected Boolean visitHtmlCloseTagNode(HtmlCloseTagNode node) {
     return false;
   }
 
-  @Override protected Boolean visitHtmlOpenTagStartNode(HtmlOpenTagStartNode node) {
-    return false;
-  }
-
-  @Override protected Boolean visitHtmlOpenTagEndNode(HtmlOpenTagEndNode node) {
-    return false;
-  }
-
-  @Override protected Boolean visitHtmlVoidTagNode(HtmlVoidTagNode node) {
+  @Override
+  protected Boolean visitVeLogNode(VeLogNode node) {
     return false;
   }
 
   // -----------------------------------------------------------------------------------------------
   // Private helpers.
 
-
   /**
    * Private helper to check whether all children of a given parent node satisfy
    * IsComputableAsJsExprsVisitor.
+   *
    * @param node The parent node whose children to check.
    * @return True if all children satisfy IsComputableAsJsExprsVisitor.
    */
@@ -259,5 +236,4 @@ class IsComputableAsJsExprsVisitor extends AbstractReturningHtmlSoyNodeVisitor<B
     // TODO(brndn): This check is probably not worth doing.  Remove.
     return child instanceof RawTextNode || child instanceof PrintNode;
   }
-
 }

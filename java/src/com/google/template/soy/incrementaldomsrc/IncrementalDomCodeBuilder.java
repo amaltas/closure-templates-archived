@@ -16,21 +16,36 @@
 
 package com.google.template.soy.incrementaldomsrc;
 
-import com.google.template.soy.data.SanitizedContent.ContentKind;
+import com.google.template.soy.base.internal.SanitizedContentKind;
+import com.google.template.soy.jssrc.dsl.CodeChunk;
+import com.google.template.soy.jssrc.internal.JsCodeBuilder;
 import com.google.template.soy.jssrc.restricted.JsExpr;
-import com.google.template.soy.jssrc.restricted.JsExprUtils;
-import com.google.template.soy.shared.internal.CodeBuilder;
-
 import java.util.List;
 
-/**
- * Used to generate code by printing {@link JsExpr}s into an output buffer.
- */
-public final class IncrementalDomCodeBuilder extends CodeBuilder<JsExpr> {
+/** Used to generate code by printing {@link JsExpr}s into an output buffer. */
+final class IncrementalDomCodeBuilder extends JsCodeBuilder {
 
   /** Used to track what kind of content is currently being processed. */
-  private ContentKind contentKind;
-  
+  private SanitizedContentKind contentKind;
+
+  IncrementalDomCodeBuilder() {
+    super();
+    // Always add the SOY_IDOM library.  This is necessary to ensure that all incremental dom src
+    // libraries always depend on it which ensures that whether a soy file is compiled on the
+    // command line or via a dynamic tool invoking SoyFileSet.compileToIncrementalDomSrc the
+    // dependencies of the file wont change.  This is important because this library is used to
+    // ensure that incremental dom still works when SoyGeneralOptions.allowExternalCalls() is true
+    // which often happens in such scenarios.
+    // TODO(lukes): disallow incrementaldomsrc from being used with allowExternalCalls and then
+    // eliminate this.
+    addGoogRequire(IncrementalDomRuntime.SOY_IDOM);
+  }
+
+  IncrementalDomCodeBuilder(IncrementalDomCodeBuilder parent) {
+    super(parent);
+    this.contentKind = parent.getContentKind();
+  }
+
   /**
    * Performs no action as there is no output variable to initialize.
    */
@@ -38,41 +53,27 @@ public final class IncrementalDomCodeBuilder extends CodeBuilder<JsExpr> {
     // NO-OP
   }
 
-  /**
-   * In Incremental DOM, the tags, attributes and print statements correspond to function calls
-   * or arguments. Instead of being concatenated into an output variable, they are just emitted in
-   * the correct location.
-   * @param jsExprs A list of expressions that may correspond to function calls or parameters.
-   */
-  @Override public void addToOutputVar(List<? extends JsExpr> jsExprs) {
-    if (getContentKind() == ContentKind.HTML || getContentKind() == ContentKind.ATTRIBUTES) {
-      for (JsExpr jsExpr : jsExprs) {
-        append(jsExpr.getText());
+  @Override
+  public IncrementalDomCodeBuilder addChunksToOutputVar(
+      List<? extends CodeChunk.WithValue> codeChunks) {
+    if (getContentKind() == SanitizedContentKind.HTML
+        || getContentKind() == SanitizedContentKind.ATTRIBUTES) {
+      for (CodeChunk.WithValue chunk : codeChunks) {
+        append(chunk);
       }
     } else {
-      appendLine(getOutputVarName(), " += ", JsExprUtils.concatJsExprs(jsExprs).getText(), ";");
+      super.addChunksToOutputVar(codeChunks);
     }
+    return this;
   }
 
-  /**
-   * Emits a series of {@link JsExpr}s at the current location in the generated code.
-   * @param jsExprs A list of expressions that may correspond to function calls or parameters.
-   */
-  protected void addToOutput(List<? extends JsExpr> jsExprs) {
-     append(JsExprUtils.concatJsExprs(jsExprs).getText());
-  }
-
-  /**
-   * @param contentKind The current kind of content being processed.
-   */
-  public void setContentKind(ContentKind contentKind) {
+  /** @param contentKind The current kind of content being processed. */
+  void setContentKind(SanitizedContentKind contentKind) {
     this.contentKind = contentKind;
   }
 
-  /**
-   * @return The current kind of content being processed.
-   */
-  public ContentKind getContentKind() {
+  /** @return The current kind of content being processed. */
+  SanitizedContentKind getContentKind() {
     return contentKind;
   }
 }

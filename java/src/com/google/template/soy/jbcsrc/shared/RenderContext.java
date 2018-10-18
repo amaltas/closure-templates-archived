@@ -19,37 +19,38 @@ package com.google.template.soy.jbcsrc.shared;
 import static com.google.common.base.Preconditions.checkNotNull;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Function;
 import com.google.common.base.Predicate;
 import com.google.common.base.Predicates;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.protobuf.Message;
+import com.google.template.soy.data.LoggingAdvisingAppendable;
 import com.google.template.soy.data.SanitizedContent.ContentKind;
 import com.google.template.soy.data.SoyRecord;
-import com.google.template.soy.data.SoyValueConverter;
-import com.google.template.soy.data.SoyValueHelper;
-import com.google.template.soy.jbcsrc.api.AdvisingAppendable;
+import com.google.template.soy.data.SoyValue;
+import com.google.template.soy.data.restricted.StringData;
+import com.google.template.soy.internal.i18n.BidiGlobalDir;
 import com.google.template.soy.jbcsrc.api.RenderResult;
 import com.google.template.soy.msgs.SoyMsgBundle;
 import com.google.template.soy.msgs.restricted.SoyMsg;
+import com.google.template.soy.msgs.restricted.SoyMsgPart;
 import com.google.template.soy.shared.SoyCssRenamingMap;
 import com.google.template.soy.shared.SoyIdRenamingMap;
 import com.google.template.soy.shared.restricted.SoyJavaFunction;
 import com.google.template.soy.shared.restricted.SoyJavaPrintDirective;
-import com.google.template.soy.types.proto.SoyProtoTypeImpl;
-
+import com.ibm.icu.util.ULocale;
 import java.util.Map;
-
 import javax.annotation.Nullable;
 
-/** 
- * A collection of contextual rendering data.  Each top level rendering operation will obtain a
+/**
+ * A collection of contextual rendering data. Each top level rendering operation will obtain a
  * single instance of this object and it will be propagated throughout the render tree.
  */
 public final class RenderContext {
   private static final CompiledTemplate EMPTY_TEMPLATE =
       new CompiledTemplate() {
         @Override
-        public RenderResult render(AdvisingAppendable appendable, RenderContext context) {
+        public RenderResult render(LoggingAdvisingAppendable appendable, RenderContext context) {
           return RenderResult.done();
         }
 
@@ -73,9 +74,11 @@ public final class RenderContext {
   private final SoyIdRenamingMap xidRenamingMap;
   private final ImmutableMap<String, SoyJavaFunction> soyJavaFunctionsMap;
   private final ImmutableMap<String, SoyJavaPrintDirective> soyJavaDirectivesMap;
-  private final SoyValueConverter converter;
   /** The bundle of translated messages */
   private final SoyMsgBundle msgBundle;
+
+  private final boolean debugSoyTemplateInfo;
+  private final boolean hasLogger;
 
   private RenderContext(Builder builder) {
     this.activeDelPackageSelector = checkNotNull(builder.activeDelPackageSelector);
@@ -84,8 +87,18 @@ public final class RenderContext {
     this.xidRenamingMap = builder.xidRenamingMap;
     this.soyJavaFunctionsMap = builder.soyJavaFunctionsMap;
     this.soyJavaDirectivesMap = builder.soyJavaDirectivesMap;
-    this.converter = builder.converter;
     this.msgBundle = builder.msgBundle;
+    this.debugSoyTemplateInfo = builder.debugSoyTemplateInfo;
+    this.hasLogger = builder.hasLogger;
+  }
+
+  @Nullable
+  public ULocale getLocale() {
+    return msgBundle.getLocale();
+  }
+
+  public BidiGlobalDir getBidiGlobalDir() {
+    return BidiGlobalDir.forStaticIsRtl(msgBundle.isRtl());
   }
 
   public String renameCssSelector(String selector) {
@@ -115,22 +128,39 @@ public final class RenderContext {
     return printDirective;
   }
 
-  /**
-   * Helper for boxing protos.  We cannot currently box protos without calling out to the value
-   * converter because the SoyProtoValue has a package private constructor and even if it was
-   * public it would be hard/impossible to call it.
-   *
-   * <p>The difficulty is because SoyProtoTypeImpl.Value currently depends on its SoyType for
-   * field interpretation.  In theory we could drop this and have it just use the descriptor
-   * directly (since it has a Message instance it could just call message.getDescriptor()), but
-   * this may add some overhead.  This could all be made much easier if we had perfect type
-   * information (then we would ~never need to box or rely on the SoyValue implementation).
-   */
-  public SoyProtoTypeImpl.Value box(Message proto) {
-    if (proto == null) {
-      return null;
+  public Function<String, String> getEscapingDirectiveAsFunction(String name) {
+    final SoyJavaPrintDirective printDirective = soyJavaDirectivesMap.get(name);
+    if (printDirective == null) {
+      throw new IllegalStateException(
+          "Failed to find Soy print directive with name '" + name + "'");
     }
-    return (SoyProtoTypeImpl.Value) converter.convert(proto);
+    if (!printDirective.getValidArgsSizes().contains(0)) {
+      throw new IllegalStateException(
+          "Soy print directive with name '" + name + "' is not an escaping directive");
+    }
+    // TODO(lukes): this adapter is lame.  there should just be a way to get the print directive to
+    // hand us an escaper or a function rather than writing this adapter.
+    return new Function<String, String>() {
+      @Override
+      public String apply(String input) {
+        return printDirective
+            .applyForJava(StringData.forValue(input), ImmutableList.<SoyValue>of())
+            .stringValue();
+      }
+    };
+  }
+
+  /**
+   * Returns a boolean that is used by other parts of the compiler. In particular, if this returns
+   * true, Soy compiler will render additional HTML comments for runtime inspections (debug only).
+   */
+  public boolean getDebugSoyTemplateInfo() {
+    return debugSoyTemplateInfo;
+  }
+
+  /** Returns a boolean indicating whether or not there is a logger configured. */
+  public boolean hasLogger() {
+    return hasLogger;
   }
 
   public CompiledTemplate getDelTemplate(
@@ -142,31 +172,33 @@ public final class RenderContext {
         return EMPTY_TEMPLATE;
       }
       throw new IllegalArgumentException(
-          "Found no active impl for delegate call to '"
+          "Found no active impl for delegate call to \""
               + calleeName
-              + "' (and no attribute allowemptydefault=\"true\").");
+              + (variant.isEmpty() ? "" : ":" + variant)
+              + "\" (and delcall does not set allowemptydefault=\"true\").");
     }
     return callee.create(params, ij);
   }
 
-  /**
-   * Returns {@code true} if the primary msg should be used instead of the fallback.
-   */
+  /** Returns {@code true} if the primary msg should be used instead of the fallback. */
   public boolean usePrimaryMsg(long msgId, long fallbackId) {
     // Note: we need to make sure the fallback msg is actually present if we are going to fallback.
-    return msgBundle.getMsg(msgId) != null || msgBundle.getMsg(fallbackId) == null;
+    // use getMsgParts() since if the bundle is a RenderOnlySoyMsgBundleImpl then this will be
+    // allocation free.
+    return !msgBundle.getMsgParts(msgId).isEmpty() || msgBundle.getMsgParts(fallbackId).isEmpty();
   }
 
   /**
    * Returns the {@link SoyMsg} associated with the {@code msgId} or the fallback (aka english)
    * translation if there is no such message.
    */
-  public SoyMsg getSoyMsg(long msgId, SoyMsg defaultMsg) {
-    SoyMsg msg = msgBundle.getMsg(msgId);
-    if (msg == null) {
-      return defaultMsg;
+  public ImmutableList<SoyMsgPart> getSoyMsgParts(
+      long msgId, ImmutableList<SoyMsgPart> defaultMsgParts) {
+    ImmutableList<SoyMsgPart> msgParts = msgBundle.getMsgParts(msgId);
+    if (msgParts.isEmpty()) {
+      return defaultMsgParts;
     }
-    return msg;
+    return msgParts;
   }
 
   @VisibleForTesting
@@ -177,8 +209,8 @@ public final class RenderContext {
         .withSoyPrintDirectives(soyJavaDirectivesMap)
         .withCssRenamingMap(cssRenamingMap)
         .withXidRenamingMap(xidRenamingMap)
-        .withConverter(converter)
-        .withMessageBundle(msgBundle);
+        .withMessageBundle(msgBundle)
+        .withCompiledTemplates(templates);
   }
 
   /** A builder for configuring the context. */
@@ -189,8 +221,9 @@ public final class RenderContext {
     private SoyIdRenamingMap xidRenamingMap = SoyCssRenamingMap.EMPTY;
     private ImmutableMap<String, SoyJavaFunction> soyJavaFunctionsMap = ImmutableMap.of();
     private ImmutableMap<String, SoyJavaPrintDirective> soyJavaDirectivesMap = ImmutableMap.of();
-    private SoyValueConverter converter = SoyValueHelper.UNCUSTOMIZED_INSTANCE;
     private SoyMsgBundle msgBundle = SoyMsgBundle.EMPTY;
+    private boolean debugSoyTemplateInfo = false;
+    private boolean hasLogger;
 
     public Builder withCompiledTemplates(CompiledTemplates templates) {
       this.templates = checkNotNull(templates);
@@ -222,18 +255,24 @@ public final class RenderContext {
       return this;
     }
 
-    public Builder withConverter(SoyValueConverter converter) {
-      this.converter = checkNotNull(converter);
+    public Builder withMessageBundle(SoyMsgBundle msgBundle) {
+      this.msgBundle = checkNotNull(msgBundle);
       return this;
     }
 
-    public Builder withMessageBundle(SoyMsgBundle msgBundle) {
-      this.msgBundle = checkNotNull(msgBundle);
+    public Builder withDebugSoyTemplateInfo(boolean debugSoyTemplateInfo) {
+      this.debugSoyTemplateInfo = debugSoyTemplateInfo;
+      return this;
+    }
+
+    public Builder hasLogger(boolean hasLogger) {
+      this.hasLogger = hasLogger;
       return this;
     }
 
     public RenderContext build() {
       return new RenderContext(this);
     }
+
   }
 }

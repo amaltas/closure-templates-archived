@@ -16,8 +16,8 @@
 
 package com.google.template.soy.soytree.defn;
 
+import com.google.template.soy.base.SourceLocation;
 import com.google.template.soy.types.SoyType;
-
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.Immutable;
 
@@ -29,9 +29,7 @@ import javax.annotation.concurrent.Immutable;
  */
 @Immutable
 public abstract class TemplateParam extends AbstractVarDefn {
-  /**
-   * Enum for the location of the declaration.
-   */
+  /** Enum for the location of the declaration. */
   public static enum DeclLoc {
     // Declaration in template SoyDoc, e.g.
     //     @param foo Blah blah blah.
@@ -44,6 +42,8 @@ public abstract class TemplateParam extends AbstractVarDefn {
   /** Whether the param is required. */
   private final boolean isRequired;
 
+  private final SourceLocation nameLocation;
+
   /** Whether the param is an injected param. */
   private final boolean isInjected;
 
@@ -55,11 +55,13 @@ public abstract class TemplateParam extends AbstractVarDefn {
       SoyType type,
       boolean isRequired,
       boolean isInjected,
-      @Nullable String desc) {
+      @Nullable String desc,
+      @Nullable SourceLocation nameLocation) {
     super(name, type);
     this.isRequired = isRequired;
     this.isInjected = isInjected;
     this.desc = desc;
+    this.nameLocation = nameLocation;
   }
 
   TemplateParam(TemplateParam param) {
@@ -67,10 +69,21 @@ public abstract class TemplateParam extends AbstractVarDefn {
     this.isRequired = param.isRequired;
     this.isInjected = param.isInjected;
     this.desc = param.desc;
+    this.nameLocation = param.nameLocation;
   }
 
-  @Override public Kind kind() {
+  @Override
+  public Kind kind() {
     return Kind.PARAM;
+  }
+
+  /**
+   * Returns the location of the name.
+   *
+   * <p>May be null if this is a param from a {@link #copyEssential()} call.
+   */
+  public SourceLocation nameLocation() {
+    return nameLocation;
   }
 
   /** Returns the location of the parameter declaration. */
@@ -89,6 +102,11 @@ public abstract class TemplateParam extends AbstractVarDefn {
 
   public String desc() {
     return desc;
+  }
+
+  @Override
+  public String toString() {
+    return getClass().getSimpleName() + "{name = " + name() + ", desc = " + desc + "}";
   }
 
   public abstract TemplateParam copyEssential();

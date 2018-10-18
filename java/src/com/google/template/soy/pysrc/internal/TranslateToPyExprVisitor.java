@@ -19,9 +19,9 @@ package com.google.template.soy.pysrc.internal;
 import com.google.common.base.Function;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Iterables;
-import com.google.template.soy.base.SoyBackendKind;
 import com.google.template.soy.error.ErrorReporter;
 import com.google.template.soy.error.SoyErrorKind;
+import com.google.template.soy.exprtree.AbstractParentExprNode;
 import com.google.template.soy.exprtree.AbstractReturningExprNodeVisitor;
 import com.google.template.soy.exprtree.BooleanNode;
 import com.google.template.soy.exprtree.DataAccessNode;
@@ -32,7 +32,9 @@ import com.google.template.soy.exprtree.ExprRootNode;
 import com.google.template.soy.exprtree.FieldAccessNode;
 import com.google.template.soy.exprtree.FunctionNode;
 import com.google.template.soy.exprtree.GlobalNode;
+import com.google.template.soy.exprtree.IntegerNode;
 import com.google.template.soy.exprtree.ItemAccessNode;
+import com.google.template.soy.exprtree.LegacyObjectMapLiteralNode;
 import com.google.template.soy.exprtree.ListLiteralNode;
 import com.google.template.soy.exprtree.MapLiteralNode;
 import com.google.template.soy.exprtree.NullNode;
@@ -44,41 +46,42 @@ import com.google.template.soy.exprtree.OperatorNodes.EqualOpNode;
 import com.google.template.soy.exprtree.OperatorNodes.NotEqualOpNode;
 import com.google.template.soy.exprtree.OperatorNodes.NullCoalescingOpNode;
 import com.google.template.soy.exprtree.OperatorNodes.PlusOpNode;
+import com.google.template.soy.exprtree.ProtoInitNode;
 import com.google.template.soy.exprtree.StringNode;
 import com.google.template.soy.exprtree.VarRefNode;
-import com.google.template.soy.internal.targetexpr.ExprUtils;
+import com.google.template.soy.logging.LoggingFunction;
 import com.google.template.soy.pysrc.restricted.PyExpr;
 import com.google.template.soy.pysrc.restricted.PyExprUtils;
 import com.google.template.soy.pysrc.restricted.PyFunctionExprBuilder;
 import com.google.template.soy.pysrc.restricted.PyStringExpr;
 import com.google.template.soy.pysrc.restricted.SoyPySrcFunction;
 import com.google.template.soy.shared.internal.BuiltinFunction;
-import com.google.template.soy.shared.internal.SharedModule;
 import com.google.template.soy.shared.restricted.SoyFunction;
-import com.google.template.soy.types.SoyObjectType;
 import com.google.template.soy.types.SoyType;
 import com.google.template.soy.types.SoyType.Kind;
-
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * Visitor for translating a Soy expression (in the form of an {@link ExprNode}) into an
- * equivalent Python expression.
+ * Visitor for translating a Soy expression (in the form of an {@link ExprNode}) into an equivalent
+ * Python expression.
  *
  */
 public final class TranslateToPyExprVisitor extends AbstractReturningExprNodeVisitor<PyExpr> {
 
+  private static final SoyErrorKind PROTO_ACCESS_NOT_SUPPORTED =
+      SoyErrorKind.of("Proto accessors are not supported in pysrc.");
+  private static final SoyErrorKind PROTO_INIT_NOT_SUPPORTED =
+      SoyErrorKind.of("Proto init is not supported in pysrc.");
   private static final SoyErrorKind SOY_PY_SRC_FUNCTION_NOT_FOUND =
       SoyErrorKind.of("Failed to find SoyPySrcFunction ''{0}''.");
 
   /**
-   * Errors in this visitor generate Python source that immediately explodes.
-   * Users of Soy are expected to check the error reporter before using the gencode;
-   * if they don't, this should apprise them.
-   * TODO(brndn): consider changing the visitor to return {@code Optional<PyExpr>}
-   * and returning {@link Optional#absent()} on error.
+   * Errors in this visitor generate Python source that immediately explodes. Users of Soy are
+   * expected to check the error reporter before using the gencode; if they don't, this should
+   * apprise them. TODO(brndn): consider changing the visitor to return {@code Optional<PyExpr>} and
+   * returning {@link Optional#absent()} on error.
    */
   private static final PyExpr ERROR =
       new PyExpr("raise Exception('Soy compilation failed')", Integer.MAX_VALUE);
@@ -92,83 +95,102 @@ public final class TranslateToPyExprVisitor extends AbstractReturningExprNodeVis
     this.localVarExprs = localVarExprs;
   }
 
-  /**
-   * Helper mapper to apply {@link #visit} to an iterable of ExprNode.
-   */
-  private final Function<ExprNode, PyExpr> VISIT_MAPPER = new Function<ExprNode, PyExpr>() {
-    @Override
-    public PyExpr apply(ExprNode node) {
-      return visit(node);
-    }
-  };
-
-
   // -----------------------------------------------------------------------------------------------
   // Implementation for a dummy root node.
 
-
-  @Override protected PyExpr visitExprRootNode(ExprRootNode node) {
+  @Override
+  protected PyExpr visitExprRootNode(ExprRootNode node) {
     return visit(node.getRoot());
   }
-
 
   // -----------------------------------------------------------------------------------------------
   // Implementations for primitives.
 
-
-  @Override protected PyExpr visitPrimitiveNode(PrimitiveNode node) {
+  @Override
+  protected PyExpr visitPrimitiveNode(PrimitiveNode node) {
     // Note: ExprNode.toSourceString() technically returns a Soy expression. In the case of
     // primitives, the result is usually also the correct Python expression.
     return new PyExpr(node.toSourceString(), Integer.MAX_VALUE);
   }
 
-  @Override protected PyExpr visitStringNode(StringNode node) {
+  @Override
+  protected PyExpr visitStringNode(StringNode node) {
     return new PyStringExpr(node.toSourceString());
   }
 
-  @Override protected PyExpr visitNullNode(NullNode node) {
+  @Override
+  protected PyExpr visitNullNode(NullNode node) {
     // Nulls are represented as 'None' in Python.
     return new PyExpr("None", Integer.MAX_VALUE);
   }
 
-  @Override protected PyExpr visitBooleanNode(BooleanNode node) {
+  @Override
+  protected PyExpr visitBooleanNode(BooleanNode node) {
     // Specifically set booleans to 'True' and 'False' given python's strict naming for booleans.
     return new PyExpr(node.getValue() ? "True" : "False", Integer.MAX_VALUE);
   }
 
-
   // -----------------------------------------------------------------------------------------------
   // Implementations for collections.
 
-
-  @Override protected PyExpr visitListLiteralNode(ListLiteralNode node) {
+  @Override
+  protected PyExpr visitListLiteralNode(ListLiteralNode node) {
     return PyExprUtils.convertIterableToPyListExpr(
-        Iterables.transform(node.getChildren(), VISIT_MAPPER));
+        Iterables.transform(
+            node.getChildren(),
+            new Function<ExprNode, PyExpr>() {
+              @Override
+              public PyExpr apply(ExprNode node) {
+                return visit(node);
+              }
+            }));
   }
 
-  @Override protected PyExpr visitMapLiteralNode(MapLiteralNode node) {
+  @Override
+  protected PyExpr visitLegacyObjectMapLiteralNode(LegacyObjectMapLiteralNode node) {
+    return visitLegacyObjectMapLiteralOrMapLiteralNode(node);
+  }
+
+  @Override
+  protected PyExpr visitMapLiteralNode(MapLiteralNode node) {
+    return visitLegacyObjectMapLiteralOrMapLiteralNode(node);
+  }
+
+  private PyExpr visitLegacyObjectMapLiteralOrMapLiteralNode(AbstractParentExprNode node) {
+    Preconditions.checkState(
+        node.getKind() == ExprNode.Kind.LEGACY_OBJECT_MAP_LITERAL_NODE
+            || node.getKind() == ExprNode.Kind.MAP_LITERAL_NODE);
     Preconditions.checkArgument(node.numChildren() % 2 == 0);
     Map<PyExpr, PyExpr> dict = new LinkedHashMap<>();
+    boolean needsRuntimeNullCheck = node.getKind() == ExprNode.Kind.MAP_LITERAL_NODE;
 
     for (int i = 0, n = node.numChildren(); i < n; i += 2) {
       ExprNode keyNode = node.getChild(i);
+      PyExpr key = visit(keyNode);
+      if (needsRuntimeNullCheck) {
+        key = new PyFunctionExprBuilder("runtime.check_not_null").addArg(key).asPyExpr();
+      }
       ExprNode valueNode = node.getChild(i + 1);
-      dict.put(visit(keyNode), visit(valueNode));
+      dict.put(key, visit(valueNode));
     }
 
+    // TODO(b/69064788): OrderedDict is being used to represent both legacy object map literals
+    // and map literals, but we know here which one is intended. Add OrderedDict APIs to tell it
+    // which kind of map it "really" is, so it can throw a runtime exception if a template tries
+    // to index into the map with the wrong convention.
     return PyExprUtils.convertMapToOrderedDict(dict);
   }
-
 
   // -----------------------------------------------------------------------------------------------
   // Implementations for data references.
 
-
-  @Override protected PyExpr visitVarRefNode(VarRefNode node) {
+  @Override
+  protected PyExpr visitVarRefNode(VarRefNode node) {
     return visitNullSafeNode(node);
   }
 
-  @Override protected PyExpr visitDataAccessNode(DataAccessNode node) {
+  @Override
+  protected PyExpr visitDataAccessNode(DataAccessNode node) {
     return visitNullSafeNode(node);
   }
 
@@ -180,81 +202,89 @@ public final class TranslateToPyExprVisitor extends AbstractReturningExprNodeVis
       return new PyExpr(refText, Integer.MAX_VALUE);
     } else {
       return new PyExpr(
-          nullSafetyPrefix + refText,
-          PyExprUtils.pyPrecedenceForOperator(Operator.CONDITIONAL));
+          nullSafetyPrefix + refText, PyExprUtils.pyPrecedenceForOperator(Operator.CONDITIONAL));
     }
   }
 
   private String visitNullSafeNodeRecurse(ExprNode node, StringBuilder nullSafetyPrefix) {
     switch (node.getKind()) {
-      case VAR_REF_NODE: {
-        VarRefNode varRef = (VarRefNode) node;
-        if (varRef.isInjected()) {
-          // Case 1: Injected data reference.
-          return genCodeForLiteralKeyAccess("ijData", varRef.getName());
-        } else {
-          PyExpr translation = localVarExprs.getVariableExpression(varRef.getName());
-          if (translation != null) {
-            // Case 2: In-scope local var.
-            return translation.getText();
+      case VAR_REF_NODE:
+        {
+          VarRefNode varRef = (VarRefNode) node;
+          if (varRef.isInjected()) {
+            // Case 1: Injected data reference.
+            return genCodeForLiteralKeyAccess("ijData", varRef.getName());
           } else {
-            // Case 3: Data reference.
-            return genCodeForLiteralKeyAccess("data", varRef.getName());
+            PyExpr translation = localVarExprs.getVariableExpression(varRef.getName());
+            if (translation != null) {
+              // Case 2: In-scope local var.
+              return translation.getText();
+            } else {
+              // Case 3: Data reference.
+              return genCodeForLiteralKeyAccess("data", varRef.getName());
+            }
           }
         }
-      }
 
       case FIELD_ACCESS_NODE:
-      case ITEM_ACCESS_NODE: {
-        DataAccessNode dataAccess = (DataAccessNode) node;
-        // First recursively visit base expression.
-        String refText = visitNullSafeNodeRecurse(dataAccess.getBaseExprChild(), nullSafetyPrefix);
+      case ITEM_ACCESS_NODE:
+        {
+          DataAccessNode dataAccess = (DataAccessNode) node;
+          // First recursively visit base expression.
+          String refText =
+              visitNullSafeNodeRecurse(dataAccess.getBaseExprChild(), nullSafetyPrefix);
 
-        // Generate null safety check for base expression.
-        if (dataAccess.isNullSafe()) {
-          nullSafetyPrefix.append("None if " + refText + " is None else ");
-        }
+          // Generate null safety check for base expression.
+          if (dataAccess.isNullSafe()) {
+            nullSafetyPrefix.append("None if ").append(refText).append(" is None else ");
+          }
 
-        // Generate access to field
-        if (node.getKind() == ExprNode.Kind.FIELD_ACCESS_NODE) {
-          FieldAccessNode fieldAccess = (FieldAccessNode) node;
-          return genCodeForFieldAccess(
-              fieldAccess.getBaseExprChild().getType(), refText, fieldAccess.getFieldName());
-        } else {
-          ItemAccessNode itemAccess = (ItemAccessNode) node;
-          Kind baseKind = itemAccess.getBaseExprChild().getType().getKind();
-          PyExpr keyPyExpr = visit(itemAccess.getKeyExprChild());
-          if (baseKind == Kind.MAP || baseKind == Kind.RECORD) {
-            return genCodeForKeyAccess(refText, keyPyExpr.getText());
+          // Generate access to field
+          if (node.getKind() == ExprNode.Kind.FIELD_ACCESS_NODE) {
+            FieldAccessNode fieldAccess = (FieldAccessNode) node;
+            return genCodeForFieldAccess(
+                fieldAccess,
+                fieldAccess.getBaseExprChild().getType(),
+                refText,
+                fieldAccess.getFieldName());
           } else {
-            return new PyFunctionExprBuilder("runtime.key_safe_data_access")
-                .addArg(new PyExpr(refText, Integer.MAX_VALUE))
-                .addArg(keyPyExpr).build();
+            ItemAccessNode itemAccess = (ItemAccessNode) node;
+            Kind baseKind = itemAccess.getBaseExprChild().getType().getKind();
+            PyExpr keyPyExpr = visit(itemAccess.getKeyExprChild());
+            if (baseKind == Kind.LEGACY_OBJECT_MAP || baseKind == Kind.RECORD) {
+              return genCodeForKeyAccess(refText, keyPyExpr.getText());
+            } else {
+              return new PyFunctionExprBuilder("runtime.key_safe_data_access")
+                  .addArg(new PyExpr(refText, Integer.MAX_VALUE))
+                  .addArg(keyPyExpr)
+                  .build();
+            }
           }
         }
-      }
 
-      default: {
-        PyExpr value = visit(node);
-        return PyExprUtils.maybeProtect(value, Integer.MAX_VALUE).getText();
-      }
+      default:
+        {
+          PyExpr value = visit(node);
+          return PyExprUtils.maybeProtect(value, Integer.MAX_VALUE).getText();
+        }
     }
   }
 
-  @Override protected PyExpr visitGlobalNode(GlobalNode node) {
-    throw new UnsupportedOperationException(node.toSourceString() + " is an unknown node type.");
+  @Override
+  protected PyExpr visitGlobalNode(GlobalNode node) {
+    return visit(node.getValue());
   }
-
 
   // -----------------------------------------------------------------------------------------------
   // Implementations for operators.
 
-
-  @Override protected PyExpr visitOperatorNode(OperatorNode node) {
+  @Override
+  protected PyExpr visitOperatorNode(OperatorNode node) {
     return genPyExprUsingSoySyntax(node);
   }
 
-  @Override protected PyExpr visitNullCoalescingOpNode(NullCoalescingOpNode node) {
+  @Override
+  protected PyExpr visitNullCoalescingOpNode(NullCoalescingOpNode node) {
     List<PyExpr> children = visitChildren(node);
 
     PyExpr conditionalExpr = PyExprUtils.genPyNotNullCheck(children.get(0));
@@ -273,34 +303,52 @@ public final class TranslateToPyExprVisitor extends AbstractReturningExprNodeVis
     return genTernaryConditional(conditionalExpr, trueExpr, falseExpr);
   }
 
-  @Override protected PyExpr visitEqualOpNode(EqualOpNode node) {
+  @Override
+  protected PyExpr visitEqualOpNode(EqualOpNode node) {
     // Python has stricter type casting rules during equality comparison. To get around this we
     // use our custom utility to emulate the behavior of Soy/JS.
     List<PyExpr> operandPyExprs = visitChildren(node);
 
-    return new PyExpr("runtime.type_safe_eq(" + operandPyExprs.get(0).getText()
-        + ", " + operandPyExprs.get(1).getText() + ")", Integer.MAX_VALUE);
+    return new PyExpr(
+        "runtime.type_safe_eq("
+            + operandPyExprs.get(0).getText()
+            + ", "
+            + operandPyExprs.get(1).getText()
+            + ")",
+        Integer.MAX_VALUE);
   }
 
-  @Override protected PyExpr visitNotEqualOpNode(NotEqualOpNode node) {
+  @Override
+  protected PyExpr visitNotEqualOpNode(NotEqualOpNode node) {
     // Invert type_safe_eq.
     List<PyExpr> operandPyExprs = visitChildren(node);
 
-    return new PyExpr("not runtime.type_safe_eq(" + operandPyExprs.get(0).getText()
-        + ", " + operandPyExprs.get(1).getText() + ")",
+    return new PyExpr(
+        "not runtime.type_safe_eq("
+            + operandPyExprs.get(0).getText()
+            + ", "
+            + operandPyExprs.get(1).getText()
+            + ")",
         PyExprUtils.pyPrecedenceForOperator(Operator.NOT));
   }
 
-  @Override protected PyExpr visitPlusOpNode(PlusOpNode node) {
+  @Override
+  protected PyExpr visitPlusOpNode(PlusOpNode node) {
     // Python has stricter type casting between strings and other primitives than Soy, so addition
     // must be sent through the type_safe_add utility to emulate that behavior.
     List<PyExpr> operandPyExprs = visitChildren(node);
 
-    return new PyExpr("runtime.type_safe_add(" + operandPyExprs.get(0).getText()
-        + ", " + operandPyExprs.get(1).getText() + ")", Integer.MAX_VALUE);
+    return new PyExpr(
+        "runtime.type_safe_add("
+            + operandPyExprs.get(0).getText()
+            + ", "
+            + operandPyExprs.get(1).getText()
+            + ")",
+        Integer.MAX_VALUE);
   }
 
-  @Override protected PyExpr visitConditionalOpNode(ConditionalOpNode node) {
+  @Override
+  protected PyExpr visitConditionalOpNode(ConditionalOpNode node) {
     // Retrieve the operands.
     Operator op = Operator.CONDITIONAL;
     List<SyntaxElement> syntax = op.getSyntax();
@@ -319,19 +367,23 @@ public final class TranslateToPyExprVisitor extends AbstractReturningExprNodeVis
   /**
    * {@inheritDoc}
    *
-   * <p>The source of available functions is a look-up map provided by Guice in
-   * {@link SharedModule#provideSoyFunctionsMap}.
+   * <p>The source of available functions is a look-up map provided by Guice in {@link
+   * SharedModule#provideSoyFunctionsMap}.
    *
    * @see BuiltinFunction
    * @see SoyPySrcFunction
    */
-  @Override protected PyExpr visitFunctionNode(FunctionNode node) {
+  @Override
+  protected PyExpr visitFunctionNode(FunctionNode node) {
     SoyFunction soyFunction = node.getSoyFunction();
     if (soyFunction instanceof BuiltinFunction) {
       return visitNonPluginFunction(node, (BuiltinFunction) soyFunction);
     } else if (soyFunction instanceof SoyPySrcFunction) {
       List<PyExpr> args = visitChildren(node);
       return ((SoyPySrcFunction) soyFunction).computeForPySrc(args);
+    } else if (soyFunction instanceof LoggingFunction) {
+      // trivial logging function support
+      return new PyStringExpr("'" + ((LoggingFunction) soyFunction).getPlaceholder() + "'");
     } else {
       errorReporter.report(
           node.getSourceLocation(), SOY_PY_SRC_FUNCTION_NOT_FOUND, node.getFunctionName());
@@ -349,22 +401,61 @@ public final class TranslateToPyExprVisitor extends AbstractReturningExprNodeVis
         return visitForEachFunction(node, "__index");
       case QUOTE_KEYS_IF_JS:
         // 'quoteKeysIfJs' is ignored in Python.
-        return visitMapLiteralNode((MapLiteralNode) node.getChild(0));
+        return visitLegacyObjectMapLiteralNode((LegacyObjectMapLiteralNode) node.getChild(0));
       case CHECK_NOT_NULL:
-        return visitCheckNotNull(node);
-      default:
+        return visitCheckNotNullFunction(node);
+      case CSS:
+        return visitCssFunction(node);
+      case XID:
+        return visitXidFunction(node);
+      case IS_PRIMARY_MSG_IN_USE:
+        return visitIsPrimaryMsgInUseFunction(node);
+      case V1_EXPRESSION:
+        throw new UnsupportedOperationException(
+            "the v1Expression function can't be used in templates compiled to Python");
+      case MSG_ID:
+      case REMAINDER:
+        // should have been removed earlier in the compiler
         throw new AssertionError();
     }
-  }
-
-  private PyExpr visitCheckNotNull(FunctionNode node) {
-    PyExpr childExpr = visit(node.getChild(0));
-    return new PyFunctionExprBuilder("runtime.check_not_null").addArg(childExpr).asPyExpr();
+    throw new AssertionError();
   }
 
   private PyExpr visitForEachFunction(FunctionNode node, String suffix) {
     String varName = ((VarRefNode) node.getChild(0)).getName();
     return localVarExprs.getVariableExpression(varName + suffix);
+  }
+
+  private PyExpr visitCheckNotNullFunction(FunctionNode node) {
+    PyExpr childExpr = visit(node.getChild(0));
+    return new PyFunctionExprBuilder("runtime.check_not_null").addArg(childExpr).asPyExpr();
+  }
+
+  private PyExpr visitCssFunction(FunctionNode node) {
+    return new PyFunctionExprBuilder("runtime.get_css_name")
+        .addArgs(visitChildren(node))
+        .asPyExpr();
+  }
+
+  private PyExpr visitXidFunction(FunctionNode node) {
+    return new PyFunctionExprBuilder("runtime.get_xid_name")
+        .addArg(visit(node.getChild(0)))
+        .asPyExpr();
+  }
+
+  private PyExpr visitIsPrimaryMsgInUseFunction(FunctionNode node) {
+    long primaryMsgId = ((IntegerNode) node.getChild(1)).getValue();
+    long fallbackMsgId = ((IntegerNode) node.getChild(2)).getValue();
+    return new PyExpr(
+        PyExprUtils.TRANSLATOR_NAME
+            + ".is_msg_available("
+            + primaryMsgId
+            + ") or not "
+            + PyExprUtils.TRANSLATOR_NAME
+            + ".is_msg_available("
+            + fallbackMsgId
+            + ")",
+        PyExprUtils.pyPrecedenceForOperator(Operator.OR));
   }
 
   /**
@@ -377,8 +468,8 @@ public final class TranslateToPyExprVisitor extends AbstractReturningExprNodeVis
   }
 
   /**
-   * Generates the code for key access given the name of a variable to be used as a key,
-   * e.g. {@code .get(key)}.
+   * Generates the code for key access given the name of a variable to be used as a key, e.g. {@code
+   * .get(key)}.
    *
    * @param keyName the variable name to be used as a key
    */
@@ -387,24 +478,19 @@ public final class TranslateToPyExprVisitor extends AbstractReturningExprNodeVis
   }
 
   /**
-   * Generates the code for a field name access, e.g. ".foo" or "['bar']". If the base type is an
-   * object type, then it delegates the generation of the Python code to the type object.
+   * Generates the code for a field name access, e.g. ".foo" or "['bar']".
    *
+   * @param node the field access source node
    * @param baseType the type of the object that contains the field
-   * @param containerExpr an expression that evaluates to the container of the named field.
-   *     This expression may have any operator precedence that binds more tightly than
-   *     exponentiation.
+   * @param containerExpr an expression that evaluates to the container of the named field. This
+   *     expression may have any operator precedence that binds more tightly than exponentiation.
    * @param fieldName the field name
    */
-  private static String genCodeForFieldAccess(
-      SoyType baseType, String containerExpr, String fieldName) {
-    if (baseType != null && baseType.getKind() == SoyType.Kind.OBJECT) {
-      SoyObjectType objType = (SoyObjectType) baseType;
-      String accessExpr = objType.getFieldAccessExpr(
-          containerExpr, fieldName, SoyBackendKind.PYTHON_SRC);
-      if (accessExpr != null) {
-        return accessExpr;
-      }
+  private String genCodeForFieldAccess(
+      ExprNode node, SoyType baseType, String containerExpr, String fieldName) {
+    if (baseType != null && baseType.getKind() == SoyType.Kind.PROTO) {
+      errorReporter.report(node.getSourceLocation(), PROTO_ACCESS_NOT_SUPPORTED);
+      return ".ERROR";
     }
     return genCodeForLiteralKeyAccess(containerExpr, fieldName);
   }
@@ -418,7 +504,7 @@ public final class TranslateToPyExprVisitor extends AbstractReturningExprNodeVis
    */
   private PyExpr genPyExprUsingSoySyntax(OperatorNode opNode) {
     List<PyExpr> operandPyExprs = visitChildren(opNode);
-    String newExpr = ExprUtils.genExprWithNewToken(opNode.getOperator(), operandPyExprs, null);
+    String newExpr = PyExprUtils.genExprWithNewToken(opNode.getOperator(), operandPyExprs, null);
 
     return new PyExpr(newExpr, PyExprUtils.pyPrecedenceForOperator(opNode.getOperator()));
   }
@@ -436,13 +522,20 @@ public final class TranslateToPyExprVisitor extends AbstractReturningExprNodeVis
     // Python's ternary operator switches the order from <conditional> ? <true> : <false> to
     // <true> if <conditional> else <false>.
     int conditionalPrecedence = PyExprUtils.pyPrecedenceForOperator(Operator.CONDITIONAL);
-    StringBuilder exprSb = new StringBuilder()
-        .append(PyExprUtils.maybeProtect(trueExpr, conditionalPrecedence).getText())
-        .append(" if ")
-        .append(PyExprUtils.maybeProtect(conditionalExpr, conditionalPrecedence).getText())
-        .append(" else ")
-        .append(PyExprUtils.maybeProtect(falseExpr, conditionalPrecedence).getText());
+    StringBuilder exprSb =
+        new StringBuilder()
+            .append(PyExprUtils.maybeProtect(trueExpr, conditionalPrecedence).getText())
+            .append(" if ")
+            .append(PyExprUtils.maybeProtect(conditionalExpr, conditionalPrecedence).getText())
+            .append(" else ")
+            .append(PyExprUtils.maybeProtect(falseExpr, conditionalPrecedence).getText());
 
     return new PyExpr(exprSb.toString(), conditionalPrecedence);
+  }
+
+  @Override
+  protected PyExpr visitProtoInitNode(ProtoInitNode node) {
+    errorReporter.report(node.getSourceLocation(), PROTO_INIT_NOT_SUPPORTED);
+    return ERROR;
   }
 }

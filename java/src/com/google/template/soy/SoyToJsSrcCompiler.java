@@ -16,11 +16,9 @@
 
 package com.google.template.soy;
 
-import com.google.common.base.Optional;
-import com.google.inject.Module;
-import com.google.template.soy.base.SoySyntaxException;
 import com.google.template.soy.jssrc.SoyJsSrcOptions;
-import com.google.template.soy.xliffmsgplugin.XliffMsgPluginModule;
+import com.google.template.soy.msgs.SoyMsgPlugin;
+import com.google.template.soy.xliffmsgplugin.XliffMsgPlugin;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
@@ -64,15 +62,6 @@ public final class SoyToJsSrcCompiler extends AbstractSoyCompiler {
   private String syntaxVersion = "";
 
   @Option(
-    name = "--shouldGenerateJsdoc",
-    usage =
-        "Whether we should generate JSDoc with type info for the Closure Compiler."
-            + " Note the generated JSDoc does not have description text, only types for the"
-            + " benefit of the Closure Compiler."
-  )
-  private boolean shouldGenerateJsdoc = false;
-
-  @Option(
     name = "--shouldProvideRequireSoyNamespaces",
     usage =
         "When this option is used, each generated JS file will contain (a) one single"
@@ -100,7 +89,7 @@ public final class SoyToJsSrcCompiler extends AbstractSoyCompiler {
         "[Required for generating localized JS] Comma-delimited list of locales for"
             + " which to generate localized JS. There will be one output JS file for each"
             + " combination of input Soy file and locale.",
-    handler = MainClassUtils.StringListOptionHandler.class
+    handler = SoyCmdLineParser.StringListOptionHandler.class
   )
   private List<String> locales = new ArrayList<>();
 
@@ -167,28 +156,31 @@ public final class SoyToJsSrcCompiler extends AbstractSoyCompiler {
             +
             " is true]"
             + " Whether to determine the bidi global direction at template runtime by"
-            + " evaluating goog.i18n.bidi.IS_RTL. Do not combine with --bidiGlobalDir."
+            + " evaluating (goog.i18n.bidi.IS_RTL). Do not combine with --bidiGlobalDir."
   )
   private boolean useGoogIsRtlForBidiGlobalDir = false;
 
   @Option(
-    name = "--messagePluginModule",
+    name = "--messagePlugin",
     usage =
-        "Specifies the full class name of a Guice module that binds a SoyMsgPlugin."
-            + " If not specified, the default is"
-            + " com.google.template.soy.xliffmsgplugin.XliffMsgPluginModule, which binds"
-            + " the XliffMsgPlugin."
+        "Specifies the full class name of a SoyMsgPlugin. If not specified, the default is"
+            + " com.google.template.soy.xliffmsgplugin.XliffMsgPlugin. "
   )
-  private Module messagePluginModule = new XliffMsgPluginModule();
+  private SoyMsgPlugin messagePlugin = new XliffMsgPlugin();
+
+  SoyToJsSrcCompiler(ClassLoader loader) {
+    super(loader);
+  }
+
+  SoyToJsSrcCompiler() {}
 
   /**
    * Compiles a set of Soy files into corresponding JS source files.
    *
    * @param args Should contain command-line flags and the list of paths to the Soy files.
    * @throws IOException If there are problems reading the input files or writing the output file.
-   * @throws SoySyntaxException If a syntax error is detected.
    */
-  public static void main(final String[] args) throws IOException, SoySyntaxException {
+  public static void main(final String[] args) throws IOException {
     new SoyToJsSrcCompiler().runMain(args);
   }
 
@@ -197,11 +189,6 @@ public final class SoyToJsSrcCompiler extends AbstractSoyCompiler {
     if (outputPathFormat.isEmpty()) {
       exitWithError("Must provide the output path format.");
     }
-  }
-
-  @Override
-  Optional<Module> msgPluginModule() {
-    return Optional.of(messagePluginModule);
   }
 
   @Override
@@ -215,7 +202,6 @@ public final class SoyToJsSrcCompiler extends AbstractSoyCompiler {
 
     // Create SoyJsSrcOptions.
     SoyJsSrcOptions jsSrcOptions = new SoyJsSrcOptions();
-    jsSrcOptions.setShouldGenerateJsdoc(shouldGenerateJsdoc);
     jsSrcOptions.setShouldProvideRequireSoyNamespaces(shouldProvideRequireSoyNamespaces);
     jsSrcOptions.setShouldDeclareTopLevelNamespaces(shouldDeclareTopLevelNamespaces);
     jsSrcOptions.setShouldGenerateGoogMsgDefs(shouldGenerateGoogMsgDefs);
@@ -227,9 +213,14 @@ public final class SoyToJsSrcCompiler extends AbstractSoyCompiler {
     boolean generateLocalizedJs = !locales.isEmpty();
     if (generateLocalizedJs) {
       sfs.compileToJsSrcFiles(
-          outputPathFormat, inputPrefix, jsSrcOptions, locales, messageFilePathFormat);
+          outputPathFormat,
+          inputPrefix,
+          jsSrcOptions,
+          locales,
+          messagePlugin,
+          messageFilePathFormat);
     } else {
-      sfs.compileToJsSrcFiles(outputPathFormat, inputPrefix, jsSrcOptions, locales, null);
+      sfs.compileToJsSrcFiles(outputPathFormat, inputPrefix, jsSrcOptions, locales, null, null);
     }
   }
 }

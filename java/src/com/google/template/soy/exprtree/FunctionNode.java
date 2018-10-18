@@ -16,70 +16,60 @@
 
 package com.google.template.soy.exprtree;
 
+import static com.google.common.base.Preconditions.checkNotNull;
 
 import com.google.template.soy.base.SourceLocation;
 import com.google.template.soy.basetree.CopyState;
 import com.google.template.soy.shared.restricted.SoyFunction;
 
-import javax.annotation.Nullable;
-
 /**
  * A node representing a function (with args as children).
  *
- * <p> Important: Do not use outside of Soy code (treat as superpackage-private).
+ * <p>Important: Do not use outside of Soy code (treat as superpackage-private).
  *
  */
 public final class FunctionNode extends AbstractParentExprNode {
 
-  /** The function name. */
-  private final String functionName;
-
-  @Nullable private SoyFunction soyFunction;
+  private final SoyFunction soyFunction;
 
   /**
-   * @param functionName The function name.
+   * @param soyFunction The SoyFunction.
    * @param sourceLocation The node's source location.
    */
-  public FunctionNode(String functionName, SourceLocation sourceLocation) {
+  public FunctionNode(SoyFunction soyFunction, SourceLocation sourceLocation) {
     super(sourceLocation);
-    this.functionName = functionName;
+    this.soyFunction = checkNotNull(soyFunction);
   }
-
 
   /**
    * Copy constructor.
+   *
    * @param orig The node to copy.
    */
   private FunctionNode(FunctionNode orig, CopyState copyState) {
     super(orig, copyState);
-    this.functionName = orig.functionName;
     this.soyFunction = orig.soyFunction;
   }
 
-
-  @Override public Kind getKind() {
+  @Override
+  public Kind getKind() {
     return Kind.FUNCTION_NODE;
   }
 
-
   /** Returns the function name. */
   public String getFunctionName() {
-    return functionName;
+    return soyFunction.getName();
   }
 
-  @Nullable public SoyFunction getSoyFunction() {
+  public SoyFunction getSoyFunction() {
     return soyFunction;
   }
 
-  public void setSoyFunction(SoyFunction soyFunction) {
-    this.soyFunction = soyFunction;
-  }
-
-
-  @Override public String toSourceString() {
+  @Override
+  public String toSourceString() {
 
     StringBuilder sourceSb = new StringBuilder();
-    sourceSb.append(functionName).append('(');
+    sourceSb.append(getFunctionName()).append('(');
 
     boolean isFirst = true;
     for (ExprNode child : getChildren()) {
@@ -95,9 +85,8 @@ public final class FunctionNode extends AbstractParentExprNode {
     return sourceSb.toString();
   }
 
-
-  @Override public FunctionNode copy(CopyState copyState) {
+  @Override
+  public FunctionNode copy(CopyState copyState) {
     return new FunctionNode(this, copyState);
   }
-
 }

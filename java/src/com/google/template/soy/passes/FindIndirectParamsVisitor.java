@@ -24,9 +24,11 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedMap;
+import com.google.common.collect.LinkedHashMultimap;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.Sets;
+import com.google.template.soy.basetree.SyntaxVersion;
 import com.google.template.soy.passes.FindIndirectParamsVisitor.IndirectParamsInfo;
 import com.google.template.soy.soytree.AbstractSoyNodeVisitor;
 import com.google.template.soy.soytree.CallBasicNode;
@@ -41,7 +43,6 @@ import com.google.template.soy.soytree.TemplateNode;
 import com.google.template.soy.soytree.TemplateRegistry;
 import com.google.template.soy.soytree.defn.TemplateParam;
 import com.google.template.soy.types.SoyType;
-
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
@@ -52,43 +53,45 @@ import java.util.SortedMap;
 /**
  * Visitor for finding the indirect params of a given template.
  *
- * <p> Important: Do not use outside of Soy code (treat as superpackage-private).
+ * <p>Important: Do not use outside of Soy code (treat as superpackage-private).
  *
- * <p> {@link #exec} should be called on a {@code TemplateNode}.
+ * <p>{@link #exec} should be called on a {@code TemplateNode}.
  *
  */
 public class FindIndirectParamsVisitor extends AbstractSoyNodeVisitor<IndirectParamsInfo> {
 
-
-  /**
-   * Return value for {@code FindIndirectParamsVisitor}.
-   */
+  /** Return value for {@code FindIndirectParamsVisitor}. */
   public static class IndirectParamsInfo {
 
     /** Map from indirect param key to param object. */
     public final SortedMap<String, TemplateParam> indirectParams;
 
-    /** Multimap from param key (direct or indirect) to transitive callees that declare the
-     *  param. */
+    /**
+     * Multimap from param key (direct or indirect) to transitive callees that declare the param.
+     */
     public final Multimap<String, TemplateNode> paramKeyToCalleesMultimap;
 
     /** Multimap from indirect param key to param types. */
     public final Multimap<String, SoyType> indirectParamTypes;
 
-    /** Whether the template (that the pass was run on) may have indirect params in external
-     *  basic calls. */
+    /**
+     * Whether the template (that the pass was run on) may have indirect params in external basic
+     * calls.
+     */
     public final boolean mayHaveIndirectParamsInExternalCalls;
 
-    /** Whether the template (that the pass was run on) may have indirect params in external
-     *  delegate calls. */
+    /**
+     * Whether the template (that the pass was run on) may have indirect params in external delegate
+     * calls.
+     */
     public final boolean mayHaveIndirectParamsInExternalDelCalls;
 
     /**
-     * @param indirectParams  Indirect params of the template (that the pass was run on).
+     * @param indirectParams Indirect params of the template (that the pass was run on).
      * @param paramKeyToCalleesMultimap Multimap from param key to callees that explicitly list the
      *     param.
-     * @param mayHaveIndirectParamsInExternalCalls Whether the template (that the pass was run
-     *     on) may have indirect params in external basic calls.
+     * @param mayHaveIndirectParamsInExternalCalls Whether the template (that the pass was run on)
+     *     may have indirect params in external basic calls.
      * @param mayHaveIndirectParamsInExternalDelCalls Whether the template (that the pass was run
      *     on) may have indirect params in external delegate calls.
      */
@@ -106,10 +109,7 @@ public class FindIndirectParamsVisitor extends AbstractSoyNodeVisitor<IndirectPa
     }
   }
 
-
-  /**
-   * Private value class to hold the info we need to know about the call stack.
-   */
+  /** Private value class to hold the info we need to know about the call stack. */
   private static class CallerFrame {
 
     /** The current caller. */
@@ -118,8 +118,10 @@ public class FindIndirectParamsVisitor extends AbstractSoyNodeVisitor<IndirectPa
     /** Set of all callers in the current call stack. */
     public final Set<TemplateNode> allCallers;
 
-    /** Set of all param keys passed explicitly (using the 'param' command) in any call in the
-     *  current call stack. */
+    /**
+     * Set of all param keys passed explicitly (using the 'param' command) in any call in the
+     * current call stack.
+     */
     public final Set<String> allCallParamKeys;
 
     /**
@@ -128,14 +130,13 @@ public class FindIndirectParamsVisitor extends AbstractSoyNodeVisitor<IndirectPa
      * @param allCallParamKeys Set of all param keys passed explicitly (using the 'param' command)
      *     in any call in the current call stack.
      */
-    public CallerFrame(TemplateNode caller, Set<TemplateNode> allCallers,
-        Set<String> allCallParamKeys) {
+    public CallerFrame(
+        TemplateNode caller, Set<TemplateNode> allCallers, Set<String> allCallParamKeys) {
       this.caller = caller;
       this.allCallers = allCallers;
       this.allCallParamKeys = allCallParamKeys;
     }
   }
-
 
   /**
    * Private value class to hold all the facets that make up a unique call situation. The meaning is
@@ -144,7 +145,7 @@ public class FindIndirectParamsVisitor extends AbstractSoyNodeVisitor<IndirectPa
    * visit the callee in that situation, even if we've previously visited the same callee under a
    * different situation.
    *
-   * <p> The call situation facets include the callee (obviously) and allCallParamKeys, which is the
+   * <p>The call situation facets include the callee (obviously) and allCallParamKeys, which is the
    * set of all param keys that were explicitly passed in the current call chain. The reason we need
    * allCallParamKeys is because, in this visitor, we're only interested in searching for indirect
    * params that may have been passed via data="all". As soon as a data key is passed explicitly in
@@ -154,15 +155,17 @@ public class FindIndirectParamsVisitor extends AbstractSoyNodeVisitor<IndirectPa
    * becomes a candidate for being an indirect param, which makes it a different situation for the
    * purpose of this visitor.
    *
-   * <p> This class can be used for hash keys.
+   * <p>This class can be used for hash keys.
    */
   private static class CallSituation {
 
     /** The current callee. */
     private final TemplateNode callee;
 
-    /** Set of all param keys passed explicitly (using the 'param' command) in any call in the
-     *  current call stack, including the call to the current callee. */
+    /**
+     * Set of all param keys passed explicitly (using the 'param' command) in any call in the
+     * current call stack, including the call to the current callee.
+     */
     private final Set<String> allCallParamKeys;
 
     /**
@@ -175,20 +178,21 @@ public class FindIndirectParamsVisitor extends AbstractSoyNodeVisitor<IndirectPa
       this.allCallParamKeys = allCallParamKeys;
     }
 
-    @Override public boolean equals(Object other) {
+    @Override
+    public boolean equals(Object other) {
       if (other == null || other.getClass() != this.getClass()) {
         return false;
       }
       CallSituation otherCallSit = (CallSituation) other;
-      return otherCallSit.callee == this.callee &&
-             otherCallSit.allCallParamKeys.equals(this.allCallParamKeys);
+      return otherCallSit.callee == this.callee
+          && otherCallSit.allCallParamKeys.equals(this.allCallParamKeys);
     }
 
-    @Override public int hashCode() {
+    @Override
+    public int hashCode() {
       return callee.hashCode() * 31 + allCallParamKeys.hashCode();
     }
   }
-
 
   /** Registry of all templates in the Soy tree. */
   private TemplateRegistry templateRegistry;
@@ -202,9 +206,11 @@ public class FindIndirectParamsVisitor extends AbstractSoyNodeVisitor<IndirectPa
   /** The current template whose body we're visiting (during pass). */
   private TemplateNode currTemplate;
 
-  /** Set of new allCallers that includes the current template, for use when recursing into callees
-   *  (during pass). This is built the first time a callee that needs to be visited is encountered.
-   *  The same object is then reused for visits to subsequent callees of the current template. */
+  /**
+   * Set of new allCallers that includes the current template, for use when recursing into callees
+   * (during pass). This is built the first time a callee that needs to be visited is encountered.
+   * The same object is then reused for visits to subsequent callees of the current template.
+   */
   private Set<TemplateNode> currNewAllCallers;
 
   /** The stack of info about callers to reach the current location (during pass). */
@@ -219,24 +225,25 @@ public class FindIndirectParamsVisitor extends AbstractSoyNodeVisitor<IndirectPa
   /** Multimap from indirect param key to param types. */
   public Multimap<String, SoyType> indirectParamTypes;
 
-  /** Whether the template (that the pass was run on) may have indirect params in external
-   *  basic calls. */
+  /**
+   * Whether the template (that the pass was run on) may have indirect params in external basic
+   * calls.
+   */
   private boolean mayHaveIndirectParamsInExternalCalls;
 
-  /** Whether the template (that the pass was run on) may have indirect params in external
-   *  delegate calls. */
+  /**
+   * Whether the template (that the pass was run on) may have indirect params in external delegate
+   * calls.
+   */
   private boolean mayHaveIndirectParamsInExternalDelCalls;
 
-
-  /**
-   * @param templateRegistry Map from template name to TemplateNode to use during the pass.
-   */
+  /** @param templateRegistry Map from template name to TemplateNode to use during the pass. */
   public FindIndirectParamsVisitor(TemplateRegistry templateRegistry) {
     this.templateRegistry = checkNotNull(templateRegistry);
   }
 
-
-  @Override public IndirectParamsInfo exec(SoyNode node) {
+  @Override
+  public IndirectParamsInfo exec(SoyNode node) {
 
     Preconditions.checkArgument(node instanceof TemplateNode);
 
@@ -248,24 +255,25 @@ public class FindIndirectParamsVisitor extends AbstractSoyNodeVisitor<IndirectPa
         new CallerFrame(null, ImmutableSet.<TemplateNode>of(), ImmutableSet.<String>of()));
     indirectParams = Maps.newHashMap();
     paramKeyToCalleesMultimap = HashMultimap.create();
-    indirectParamTypes = HashMultimap.create();
+    indirectParamTypes = LinkedHashMultimap.create();
     mayHaveIndirectParamsInExternalCalls = false;
     mayHaveIndirectParamsInExternalDelCalls = false;
 
     visit(node);
 
     return new IndirectParamsInfo(
-        ImmutableSortedMap.copyOf(indirectParams), paramKeyToCalleesMultimap,
+        ImmutableSortedMap.copyOf(indirectParams),
+        paramKeyToCalleesMultimap,
         ImmutableMultimap.copyOf(indirectParamTypes),
-        mayHaveIndirectParamsInExternalCalls, mayHaveIndirectParamsInExternalDelCalls);
+        mayHaveIndirectParamsInExternalCalls,
+        mayHaveIndirectParamsInExternalDelCalls);
   }
-
 
   // -----------------------------------------------------------------------------------------------
   // Implementations for specific nodes.
 
-
-  @Override protected void visitTemplateNode(TemplateNode node) {
+  @Override
+  protected void visitTemplateNode(TemplateNode node) {
 
     if (isStartOfPass) {
       isStartOfPass = false;
@@ -273,38 +281,37 @@ public class FindIndirectParamsVisitor extends AbstractSoyNodeVisitor<IndirectPa
     } else {
       // Add the params listed by this template.
       List<TemplateParam> params = node.getParams();
-      if (params == null) {
-        // We can't tell what's going on because this template doesn't have param decls.
-        mayHaveIndirectParamsInExternalCalls = true;
-      } else {
-        for (TemplateParam param : params) {
-          if (callerStack.peek().allCallParamKeys.contains(param.name())) {
-            continue;  // param is actually not being passed by data="all"
-          }
-          if (! indirectParams.containsKey(param.name())) {
-            indirectParams.put(param.name(), param);
-          }
-          paramKeyToCalleesMultimap.put(param.name(), node);
-          Preconditions.checkNotNull(param.type());
-          indirectParamTypes.put(param.name(), param.type());
+      for (TemplateParam param : params) {
+        if (callerStack.peek().allCallParamKeys.contains(param.name())) {
+          continue; // param is actually not being passed by data="all"
         }
+        if (!indirectParams.containsKey(param.name())) {
+          indirectParams.put(param.name(), param);
+        }
+        paramKeyToCalleesMultimap.put(param.name(), node);
+        Preconditions.checkNotNull(param.type());
+        indirectParamTypes.put(param.name(), param.type());
+      }
+      if (!node.couldHaveSyntaxVersionAtLeast(SyntaxVersion.V2_0)) {
+        // V1 templates don't need to declare all params.
+        mayHaveIndirectParamsInExternalCalls = true;
       }
     }
 
     // Visit children to recurse on callees.
     currTemplate = node;
-    currNewAllCallers = null;  // built the first time it's needed
+    currNewAllCallers = null; // built the first time it's needed
     visitChildren(node);
   }
 
-
-  @Override protected void visitCallBasicNode(CallBasicNode node) {
+  @Override
+  protected void visitCallBasicNode(CallBasicNode node) {
 
     // Don't forget to visit content within CallParamContentNodes.
     visitChildren(node);
 
     // We only want to recurse on calls that pass all data.
-    if (!node.dataAttribute().isPassingAllData()) {
+    if (!node.isPassingAllData()) {
       return;
     }
 
@@ -321,14 +328,14 @@ public class FindIndirectParamsVisitor extends AbstractSoyNodeVisitor<IndirectPa
     visitCalleeHelper(node, callee);
   }
 
-
-  @Override protected void visitCallDelegateNode(CallDelegateNode node) {
+  @Override
+  protected void visitCallDelegateNode(CallDelegateNode node) {
 
     // Don't forget to visit content within CallParamContentNodes.
     visitChildren(node);
 
     // We only want to recurse on calls that pass all data.
-    if (!node.dataAttribute().isPassingAllData()) {
+    if (!node.isPassingAllData()) {
       return;
     }
 
@@ -347,7 +354,6 @@ public class FindIndirectParamsVisitor extends AbstractSoyNodeVisitor<IndirectPa
     }
   }
 
-
   private void visitCalleeHelper(CallNode caller, TemplateNode callee) {
 
     // We must not revisit the current template or any templates already in the caller stack.
@@ -361,8 +367,8 @@ public class FindIndirectParamsVisitor extends AbstractSoyNodeVisitor<IndirectPa
     Set<String> prevAllCallParamKeys = callerStack.peek().allCallParamKeys;
     Set<String> additionalCallParamKeys = Sets.newHashSet();
     for (CallParamNode callParamNode : caller.getChildren()) {
-      String callParamKey = callParamNode.getKey();
-      if (! prevAllCallParamKeys.contains(callParamKey)) {
+      String callParamKey = callParamNode.getKey().identifier();
+      if (!prevAllCallParamKeys.contains(callParamKey)) {
         additionalCallParamKeys.add(callParamKey);
       }
     }
@@ -407,15 +413,13 @@ public class FindIndirectParamsVisitor extends AbstractSoyNodeVisitor<IndirectPa
     currNewAllCallers = callerFrame.allCallers;
   }
 
-
   // -----------------------------------------------------------------------------------------------
   // Fallback implementation.
 
-
-  @Override protected void visitSoyNode(SoyNode node) {
+  @Override
+  protected void visitSoyNode(SoyNode node) {
     if (node instanceof ParentSoyNode<?>) {
       visitChildren((ParentSoyNode<?>) node);
     }
   }
-
 }

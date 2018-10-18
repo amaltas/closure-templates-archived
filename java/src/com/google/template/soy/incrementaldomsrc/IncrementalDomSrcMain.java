@@ -18,123 +18,93 @@ package com.google.template.soy.incrementaldomsrc;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 
+import com.google.common.base.Supplier;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Multimap;
 import com.google.common.io.Files;
-import com.google.template.soy.base.SoySyntaxException;
 import com.google.template.soy.error.ErrorReporter;
-import com.google.template.soy.html.passes.HtmlTransformVisitor;
+import com.google.template.soy.incrementaldomsrc.GenIncrementalDomExprsVisitor.GenIncrementalDomExprsVisitorFactory;
 import com.google.template.soy.internal.i18n.BidiGlobalDir;
 import com.google.template.soy.internal.i18n.SoyBidiUtils;
 import com.google.template.soy.jssrc.SoyJsSrcOptions;
-import com.google.template.soy.jssrc.internal.OptimizeBidiCodeGenVisitor;
+import com.google.template.soy.jssrc.internal.CanInitOutputVarVisitor;
+import com.google.template.soy.passes.CombineConsecutiveRawTextNodesPass;
 import com.google.template.soy.shared.internal.ApiCallScopeUtils;
 import com.google.template.soy.shared.internal.GuiceSimpleScope;
-import com.google.template.soy.shared.internal.GuiceSimpleScope.WithScope;
 import com.google.template.soy.shared.internal.MainEntryPointUtils;
 import com.google.template.soy.shared.restricted.ApiCallScopeBindingAnnotations.ApiCall;
-import com.google.template.soy.sharedpasses.opti.SimplifyVisitor;
 import com.google.template.soy.soytree.SoyFileNode;
 import com.google.template.soy.soytree.SoyFileSetNode;
 import com.google.template.soy.soytree.TemplateRegistry;
-
+import com.google.template.soy.types.SoyTypeRegistry;
 import java.io.File;
 import java.io.IOException;
 import java.io.Writer;
+import java.util.Collections;
 import java.util.List;
 
-import javax.inject.Inject;
-import javax.inject.Provider;
-
 /**
- * Main entry point for the Incremental DOM  JS Src backend (output target).
+ * Main entry point for the Incremental DOM JS Src backend (output target).
  *
- * <p> Important: Do not use outside of Soy code (treat as superpackage-private).
+ * <p>Important: Do not use outside of Soy code (treat as superpackage-private).
  */
 public class IncrementalDomSrcMain {
-
 
   /** The scope object that manages the API call scope. */
   private final GuiceSimpleScope apiCallScope;
 
-  /** The instanceof of SimplifyVisitor to use. */
-  private final SimplifyVisitor simplifyVisitor;
+  private final SoyTypeRegistry typeRegistry;
 
-  /** Provider for getting an instance of OptimizeBidiCodeGenVisitor. */
-  private final Provider<OptimizeBidiCodeGenVisitor> optimizeBidiCodeGenVisitorProvider;
-
-  /** Provider for getting an instance of GenJsCodeVisitor. */
-  private final Provider<GenIncrementalDomCodeVisitor> genIncrementalDomCodeVisitorProvider;
-
-
-  /**
-   * @param apiCallScope The scope object that manages the API call scope.
-   * @param simplifyVisitor The instance of SimplifyVisitor to use.
-   * @param optimizeBidiCodeGenVisitorProvider Provider for getting an instance of
-   *     OptimizeBidiCodeGenVisitor.
-   * @param genIncrementalDomCodeVisitorProvider Provider for getting an instance of
-   *     GenIncrementalDomCodeVisitor.
-   */
-  @Inject
   public IncrementalDomSrcMain(
-      @ApiCall GuiceSimpleScope apiCallScope,
-      SimplifyVisitor simplifyVisitor,
-      Provider<OptimizeBidiCodeGenVisitor> optimizeBidiCodeGenVisitorProvider,
-      Provider<GenIncrementalDomCodeVisitor> genIncrementalDomCodeVisitorProvider) {
+      @ApiCall GuiceSimpleScope apiCallScope, SoyTypeRegistry typeRegistry) {
     this.apiCallScope = apiCallScope;
-    this.simplifyVisitor = simplifyVisitor;
-    this.optimizeBidiCodeGenVisitorProvider = optimizeBidiCodeGenVisitorProvider;
-    this.genIncrementalDomCodeVisitorProvider = genIncrementalDomCodeVisitorProvider;
+    this.typeRegistry = typeRegistry;
   }
-
 
   /**
    * Generates Incremental DOM JS source code given a Soy parse tree, an options object, and an
    * optional bundle of translated messages.
    *
    * @param soyTree The Soy parse tree to generate JS source code for.
-   * @param jsSrcOptions The compilation options relevant to this backend.
+   * @param registry The template registry that contains all the template information.
+   * @param options The compilation options relevant to this backend.
+   * @param errorReporter The Soy error reporter that collects errors during code generation.
    * @return A list of strings where each string represents the JS source code that belongs in one
    *     JS file. The generated JS files correspond one-to-one to the original Soy source files.
-   * @throws SoySyntaxException If a syntax error is found.
    */
   public List<String> genJsSrc(
       SoyFileSetNode soyTree,
       TemplateRegistry registry,
-      SoyJsSrcOptions jsSrcOptions,
-      ErrorReporter errorReporter)
-      throws SoySyntaxException {
+      SoyIncrementalDomSrcOptions options,
+      ErrorReporter errorReporter) {
 
-    SoyJsSrcOptions incrementalJSSrcOptions = jsSrcOptions.clone();
-    incrementalJSSrcOptions.setShouldProvideBothSoyNamespacesAndJsFunctions(false);
-    incrementalJSSrcOptions.setShouldProvideRequireSoyNamespaces(false);
-    incrementalJSSrcOptions.setShouldProvideRequireJsFunctions(false);
-    incrementalJSSrcOptions.setShouldDeclareTopLevelNamespaces(false);
-    incrementalJSSrcOptions.setShouldGenerateGoogModules(true);
+    SoyJsSrcOptions incrementalJSSrcOptions = options.toJsSrcOptions();
 
-    try (WithScope withScope = apiCallScope.enter()) {
+    try (GuiceSimpleScope.InScope inScope = apiCallScope.enter()) {
       // Seed the scoped parameters.
-      apiCallScope.seed(SoyJsSrcOptions.class, incrementalJSSrcOptions);
-      BidiGlobalDir bidiGlobalDir = SoyBidiUtils.decodeBidiGlobalDirFromJsOptions(
-          incrementalJSSrcOptions.getBidiGlobalDir(),
-          incrementalJSSrcOptions.getUseGoogIsRtlForBidiGlobalDir());
-      ApiCallScopeUtils.seedSharedParams(apiCallScope, null /* msgBundle */, bidiGlobalDir);
+      BidiGlobalDir bidiGlobalDir =
+          SoyBidiUtils.decodeBidiGlobalDirFromJsOptions(
+              incrementalJSSrcOptions.getBidiGlobalDir(),
+              incrementalJSSrcOptions.getUseGoogIsRtlForBidiGlobalDir());
+      ApiCallScopeUtils.seedSharedParams(inScope, null /* msgBundle */, bidiGlobalDir);
 
       // Do the code generation.
-      optimizeBidiCodeGenVisitorProvider.get().exec(soyTree);
-      simplifyVisitor.simplify(soyTree, registry);
 
-      new HtmlTransformVisitor(errorReporter).exec(soyTree);
-      IncrementalDomOutputOptimizers.collapseOpenTags(soyTree);
-      IncrementalDomOutputOptimizers.collapseElements(soyTree);
+      new HtmlContextVisitor(errorReporter).exec(soyTree);
+      // If any errors are reported in {@code HtmlContextVisitor}, we should not continue.
+      // Return an empty list here, {@code SoyFileSet} will throw an exception.
+      if (errorReporter.hasErrors()) {
+        return Collections.emptyList();
+      }
 
       new UnescapingVisitor().exec(soyTree);
 
-      // Must happen after HtmlTransformVisitor, so it can infer context for {msg} nodes.
-      new IncrementalDomExtractMsgVariablesVisitor().exec(soyTree);
-
-      return genIncrementalDomCodeVisitorProvider.get().gen(soyTree, registry, errorReporter);
+      new RemoveUnnecessaryEscapingDirectives().run(soyTree);
+      // some of the above passes may slice up raw text nodes, recombine them.
+      new CombineConsecutiveRawTextNodesPass().run(soyTree);
+      return createVisitor(incrementalJSSrcOptions, typeRegistry)
+          .gen(soyTree, registry, errorReporter);
     }
   }
 
@@ -143,32 +113,40 @@ public class IncrementalDomSrcMain {
    * optional bundle of translated messages, and information on where to put the output files.
    *
    * @param soyTree The Soy parse tree to generate JS source code for.
+   * @param templateRegistry The template registry that contains all the template information.
    * @param jsSrcOptions The compilation options relevant to this backend.
    * @param outputPathFormat The format string defining how to build the output file path
    *     corresponding to an input file path.
-   * @throws SoySyntaxException If a syntax error is found.
+   * @param errorReporter The Soy error reporter that collects errors during code generation.
    * @throws IOException If there is an error in opening/writing an output JS file.
    */
   public void genJsFiles(
       SoyFileSetNode soyTree,
       TemplateRegistry templateRegistry,
-      SoyJsSrcOptions jsSrcOptions,
+      SoyIncrementalDomSrcOptions jsSrcOptions,
       String outputPathFormat,
       ErrorReporter errorReporter)
-      throws SoySyntaxException, IOException {
-
+      throws IOException {
     List<String> jsFileContents = genJsSrc(soyTree, templateRegistry, jsSrcOptions, errorReporter);
-
-    ImmutableList<SoyFileNode> srcsToCompile = ImmutableList.copyOf(Iterables.filter(
-        soyTree.getChildren(), SoyFileNode.MATCH_SRC_FILENODE));
+    // If there are any errors in genJsSrc, jsFileContents will be an empty list, and we should not
+    // try to compare the size between jsFileContents and srcsToCompile.
+    if (errorReporter.hasErrors()) {
+      return;
+    }
+    ImmutableList<SoyFileNode> srcsToCompile =
+        ImmutableList.copyOf(
+            Iterables.filter(soyTree.getChildren(), SoyFileNode.MATCH_SRC_FILENODE));
 
     if (srcsToCompile.size() != jsFileContents.size()) {
-      throw new AssertionError(String.format("Expected to generate %d code chunk(s), got %d",
-          srcsToCompile.size(), jsFileContents.size()));
+      throw new AssertionError(
+          String.format(
+              "Expected to generate %d code chunk(s), got %d",
+              srcsToCompile.size(), jsFileContents.size()));
     }
 
-    Multimap<String, Integer> outputs = MainEntryPointUtils.mapOutputsToSrcs(
-        null /* locale */, outputPathFormat, "" /* inputPathsPrefix */, srcsToCompile);
+    Multimap<String, Integer> outputs =
+        MainEntryPointUtils.mapOutputsToSrcs(
+            null /* locale */, outputPathFormat, "" /* inputPathsPrefix */, srcsToCompile);
 
     for (String outputFilePath : outputs.keySet()) {
       Writer out = Files.newWriter(new File(outputFilePath), UTF_8);
@@ -189,5 +167,37 @@ public class IncrementalDomSrcMain {
         out.close();
       }
     }
+  }
+
+  static GenIncrementalDomCodeVisitor createVisitor(
+      final SoyJsSrcOptions options, SoyTypeRegistry typeRegistry) {
+    final IncrementalDomDelTemplateNamer delTemplateNamer = new IncrementalDomDelTemplateNamer();
+    final IsComputableAsIncrementalDomExprsVisitor isComputableAsJsExprsVisitor =
+        new IsComputableAsIncrementalDomExprsVisitor();
+    CanInitOutputVarVisitor canInitOutputVarVisitor =
+        new CanInitOutputVarVisitor(isComputableAsJsExprsVisitor);
+    // TODO(lukes): eliminate this supplier.  See commend in JsSrcMain for more information.
+    class GenCallCodeUtilsSupplier implements Supplier<IncrementalDomGenCallCodeUtils> {
+      GenIncrementalDomExprsVisitorFactory factory;
+
+      @Override
+      public IncrementalDomGenCallCodeUtils get() {
+        return new IncrementalDomGenCallCodeUtils(
+            options, delTemplateNamer, isComputableAsJsExprsVisitor, factory);
+      }
+    }
+    GenCallCodeUtilsSupplier supplier = new GenCallCodeUtilsSupplier();
+    GenIncrementalDomExprsVisitorFactory genJsExprsVisitorFactory =
+        new GenIncrementalDomExprsVisitorFactory(options, supplier, isComputableAsJsExprsVisitor);
+    supplier.factory = genJsExprsVisitorFactory;
+
+    return new GenIncrementalDomCodeVisitor(
+        options,
+        delTemplateNamer,
+        supplier.get(),
+        isComputableAsJsExprsVisitor,
+        canInitOutputVarVisitor,
+        genJsExprsVisitorFactory,
+        typeRegistry);
   }
 }
