@@ -19,10 +19,10 @@ package com.google.template.soy.passes;
 import com.google.template.soy.basetree.AbstractNodeVisitor;
 import com.google.template.soy.basetree.Node;
 import com.google.template.soy.basetree.ParentNode;
+import com.google.template.soy.exprtree.ExprRootNode;
 import com.google.template.soy.exprtree.VarDefn;
 import com.google.template.soy.exprtree.VarRefNode;
 import com.google.template.soy.soytree.CallNode;
-import com.google.template.soy.soytree.ExprUnion;
 import com.google.template.soy.soytree.SoyNode.ExprHolderNode;
 import com.google.template.soy.soytree.TemplateNode;
 import com.google.template.soy.soytree.defn.TemplateParam;
@@ -30,14 +30,12 @@ import com.google.template.soy.soytree.defn.TemplateParam;
 /**
  * Visitor for determining whether a template needs to ensure that its data is defined.
  *
- * <p> Important: Do not use outside of Soy code (treat as superpackage-private).
+ * <p>Important: Do not use outside of Soy code (treat as superpackage-private).
  *
  */
 public final class ShouldEnsureDataIsDefinedVisitor {
 
-  /**
-   * Runs this pass on the given template.
-   */
+  /** Runs this pass on the given template. */
   public boolean exec(TemplateNode template) {
 
     boolean hasOptional = false;
@@ -64,25 +62,27 @@ public final class ShouldEnsureDataIsDefinedVisitor {
     return new AbstractNodeVisitor<Node, Boolean>() {
       boolean shouldEnsureDataIsDefined;
 
-      @Override public Boolean exec(Node node) {
+      @Override
+      public Boolean exec(Node node) {
         visit(node);
         return shouldEnsureDataIsDefined;
       }
 
-      @Override public void visit(Node node) {
+      @Override
+      public void visit(Node node) {
         if (node instanceof VarRefNode) {
           VarRefNode varRefNode = (VarRefNode) node;
           VarDefn var = varRefNode.getDefnDecl();
           // Don't include injected params in this analysis
           if (varRefNode.isPossibleParam()
-              && (var.kind() != VarDefn.Kind.PARAM  // a soydoc param -> not ij
-                  || !((TemplateParam) var).isInjected())) {  // an {@param but not {@inject
+              && (var.kind() != VarDefn.Kind.PARAM // a soydoc param -> not ij
+                  || !((TemplateParam) var).isInjected())) { // an {@param but not {@inject
             shouldEnsureDataIsDefined = true;
             return;
           }
         }
         if (node instanceof CallNode) {
-          if (((CallNode) node).dataAttribute().isPassingAllData()) {
+          if (((CallNode) node).isPassingAllData()) {
             shouldEnsureDataIsDefined = true;
             return;
           }
@@ -96,12 +96,10 @@ public final class ShouldEnsureDataIsDefinedVisitor {
           }
         }
         if (node instanceof ExprHolderNode) {
-          for (ExprUnion exprUnion : ((ExprHolderNode) node).getAllExprUnions()) {
-            if (exprUnion.getExpr() != null) {
-              visit(exprUnion.getExpr());
-              if (shouldEnsureDataIsDefined) {
-                return;
-              }
+          for (ExprRootNode expr : ((ExprHolderNode) node).getExprList()) {
+            visit(expr);
+            if (shouldEnsureDataIsDefined) {
+              return;
             }
           }
         }

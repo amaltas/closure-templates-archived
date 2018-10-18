@@ -17,61 +17,75 @@
 package com.google.template.soy.incrementaldomsrc;
 
 import com.google.common.base.Preconditions;
-import com.google.inject.assistedinject.Assisted;
-import com.google.inject.assistedinject.AssistedInject;
+import com.google.common.base.Supplier;
 import com.google.template.soy.error.ErrorReporter;
+import com.google.template.soy.jssrc.SoyJsSrcOptions;
+import com.google.template.soy.jssrc.dsl.CodeChunk;
 import com.google.template.soy.jssrc.internal.GenJsExprsVisitor;
-import com.google.template.soy.jssrc.internal.JsExprTranslator;
 import com.google.template.soy.jssrc.internal.TemplateAliases;
-import com.google.template.soy.jssrc.restricted.JsExpr;
-import com.google.template.soy.jssrc.restricted.SoyJsSrcPrintDirective;
+import com.google.template.soy.jssrc.internal.TranslationContext;
 import com.google.template.soy.soytree.PrintNode;
 import com.google.template.soy.soytree.SoyNode;
-
 import java.util.ArrayList;
-import java.util.Deque;
 import java.util.List;
-import java.util.Map;
 
-/**
- * Overrides the base class to provide the correct helpers classes.
- */
+/** Overrides the base class to provide the correct helpers classes. */
 public final class GenIncrementalDomExprsVisitor extends GenJsExprsVisitor {
 
-  /**
-   * Injectable factory for creating an instance of this class.
-   */
-  public interface GenIncrementalDomExprsVisitorFactory extends GenJsExprsVisitorFactory {}
+  /** Injectable factory for creating an instance of this class. */
+  public static final class GenIncrementalDomExprsVisitorFactory extends GenJsExprsVisitorFactory {
 
-  @AssistedInject
+    @SuppressWarnings("unchecked")
+    GenIncrementalDomExprsVisitorFactory(
+        SoyJsSrcOptions options,
+        Supplier<IncrementalDomGenCallCodeUtils> genCallCodeUtils,
+        IsComputableAsIncrementalDomExprsVisitor isComputableAsJsExprsVisitor) {
+      super(options, (Supplier) genCallCodeUtils, isComputableAsJsExprsVisitor);
+    }
+
+    @Override
+    public GenIncrementalDomExprsVisitor create(
+        TranslationContext translationContext,
+        TemplateAliases templateAliases,
+        ErrorReporter errorReporter) {
+      return new GenIncrementalDomExprsVisitor(
+          options,
+          (IncrementalDomGenCallCodeUtils) genCallCodeUtils.get(),
+          (IsComputableAsIncrementalDomExprsVisitor) isComputableAsJsExprsVisitor,
+          this,
+          translationContext,
+          errorReporter,
+          templateAliases);
+    }
+  }
+
   public GenIncrementalDomExprsVisitor(
-      Map<String, SoyJsSrcPrintDirective> soyJsSrcDirectivesMap,
-      JsExprTranslator jsExprTranslator,
+      SoyJsSrcOptions options,
       IncrementalDomGenCallCodeUtils genCallCodeUtils,
       IsComputableAsIncrementalDomExprsVisitor isComputableAsJsExprsVisitor,
       GenIncrementalDomExprsVisitorFactory genIncrementalDomExprsVisitorFactory,
-      @Assisted ErrorReporter errorReporter,
-      @Assisted Deque<Map<String, JsExpr>> localVarTranslations,
-      @Assisted TemplateAliases templateAliases) {
+      TranslationContext translationContext,
+      ErrorReporter errorReporter,
+      TemplateAliases templateAliases) {
     super(
-        soyJsSrcDirectivesMap,
-        jsExprTranslator,
+        options,
         genCallCodeUtils,
         isComputableAsJsExprsVisitor,
         genIncrementalDomExprsVisitorFactory,
+        translationContext,
         errorReporter,
-        localVarTranslations,
         templateAliases);
   }
 
-  @Override public List<JsExpr> exec(SoyNode node) {
+  @Override
+  public List<CodeChunk.WithValue> exec(SoyNode node) {
     // HTML PrintNodes in idom are not directly computable as expressions. However, the idom codegen
     // emits them by wrapping the result of this visitor in an idom command statement, so we need to
     // skip this check for PrintNodes.
-    Preconditions.checkArgument(node instanceof PrintNode
-        || isComputableAsJsExprsVisitor.exec(node));
-    jsExprs = new ArrayList<>();
+    Preconditions.checkArgument(
+        node instanceof PrintNode || isComputableAsJsExprsVisitor.exec(node));
+    chunks = new ArrayList<>();
     visit(node);
-    return jsExprs;
+    return chunks;
   }
 }

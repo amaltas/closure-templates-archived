@@ -17,31 +17,28 @@ package com.google.template.soy.error;
 
 import static com.google.common.base.Preconditions.checkArgument;
 
-import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
-import com.google.template.soy.base.SoySyntaxException;
+import com.google.common.collect.Ordering;
 
 /**
- * Reports on all Soy compilation errors and allows for programmatic inspection via
- * {@link #getErrors()}.
+ * Reports on all Soy compilation errors and allows for programmatic inspection via {@link
+ * #getErrors()}.
  */
-public final class SoyCompilationException extends SoySyntaxException {
+public final class SoyCompilationException extends RuntimeException {
   private final ImmutableList<SoyError> errors;
 
-  public SoyCompilationException(Iterable<SoyError> specificErrors) {
-    super();
-    this.errors = ImmutableList.copyOf(specificErrors);
-    checkArgument(!errors.isEmpty());
+  public SoyCompilationException(Iterable<SoyError> errors) {
+    this.errors = Ordering.natural().immutableSortedCopy(errors);
+    checkArgument(!this.errors.isEmpty());
   }
 
+  /** Returns the list of errors in sorted order. */
   public ImmutableList<SoyError> getErrors() {
     return errors;
   }
 
   @Override
   public String getMessage() {
-    StringBuilder sb = new StringBuilder("errors during Soy compilation\n");
-    Joiner.on("\n").appendTo(sb, errors);
-    return sb.toString();
+    return SoyErrors.formatErrors(errors);
   }
 }

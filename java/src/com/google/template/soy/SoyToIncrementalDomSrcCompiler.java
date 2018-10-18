@@ -17,13 +17,9 @@
 package com.google.template.soy;
 
 import com.google.common.annotations.Beta;
-import com.google.template.soy.base.SoySyntaxException;
-import com.google.template.soy.jssrc.SoyJsSrcOptions;
-
-import org.kohsuke.args4j.Option;
-
+import com.google.template.soy.incrementaldomsrc.SoyIncrementalDomSrcOptions;
 import java.io.IOException;
-
+import org.kohsuke.args4j.Option;
 
 /**
  * Executable for compiling a set of Soy files into corresponding Incremental DOM source files. This
@@ -53,37 +49,25 @@ public final class SoyToIncrementalDomSrcCompiler extends AbstractSoyCompiler {
   )
   private String outputPathFormat;
 
-   /**
+  /**
    * Compiles a set of Soy files into corresponding Incremental DOM source files.
    *
    * @param args Should contain command-line flags and the list of paths to the Soy files.
    * @throws IOException If there are problems reading the input files or writing the output file.
-   * @throws SoySyntaxException If a syntax error is detected.
    */
-  public static void main(final String[] args) throws IOException, SoySyntaxException {
+  public static void main(final String[] args) throws IOException {
     new SoyToIncrementalDomSrcCompiler().runMain(args);
   }
 
-  private SoyToIncrementalDomSrcCompiler() {}
+  SoyToIncrementalDomSrcCompiler(ClassLoader loader) {
+    super(loader);
+  }
+
+  SoyToIncrementalDomSrcCompiler() {}
 
   @Override
   void compile(SoyFileSet.Builder sfsBuilder) throws IOException {
-    sfsBuilder.setAllowExternalCalls(false);
     SoyFileSet sfs = sfsBuilder.build();
-    // Create SoyJsSrcOptions.
-    SoyJsSrcOptions jsSrcOptions = new SoyJsSrcOptions();
-    jsSrcOptions.setShouldAllowDeprecatedSyntax(false);
-    jsSrcOptions.setShouldProvideRequireSoyNamespaces(false);
-    jsSrcOptions.setShouldProvideRequireJsFunctions(false);
-    jsSrcOptions.setShouldProvideBothSoyNamespacesAndJsFunctions(false);
-    jsSrcOptions.setShouldDeclareTopLevelNamespaces(false);
-    jsSrcOptions.setShouldGenerateJsdoc(true);
-    // Only goog.module generation supported
-    jsSrcOptions.setShouldGenerateGoogModules(true);
-    jsSrcOptions.setShouldGenerateGoogMsgDefs(true);
-    jsSrcOptions.setGoogMsgsAreExternal(true);
-    jsSrcOptions.setBidiGlobalDir(0);
-    jsSrcOptions.setUseGoogIsRtlForBidiGlobalDir(true);
-    sfs.compileToIncrementalDomSrcFiles(outputPathFormat, jsSrcOptions);
+    sfs.compileToIncrementalDomSrcFiles(outputPathFormat, new SoyIncrementalDomSrcOptions());
   }
 }

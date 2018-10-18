@@ -19,6 +19,8 @@ package com.google.template.soy.passes;
 import com.google.template.soy.base.internal.SoyFileKind;
 import com.google.template.soy.error.ErrorReporter;
 import com.google.template.soy.error.SoyErrorKind;
+import com.google.template.soy.error.SoyErrorKind.StyleAllowance;
+import com.google.template.soy.error.SoyErrors;
 import com.google.template.soy.soytree.AbstractSoyNodeVisitor;
 import com.google.template.soy.soytree.CallBasicNode;
 import com.google.template.soy.soytree.SoyFileNode;
@@ -31,17 +33,19 @@ import com.google.template.soy.soytree.TemplateRegistry;
  * Visitor to check that there are no external calls. Used by backends that disallow external calls,
  * such as the Tofu (JavaObj) backend.
  *
- * <p> {@link #exec} should be called on a {@code SoyFileSetNode} or a {@code SoyFileNode}. There is
+ * <p>{@link #exec} should be called on a {@code SoyFileSetNode} or a {@code SoyFileNode}. There is
  * no return value. A {@code SoySyntaxException} is thrown if an error is found.
  *
  */
 public final class StrictDepsVisitor extends AbstractSoyNodeVisitor<Void> {
 
   private static final SoyErrorKind CALL_TO_UNDEFINED_TEMPLATE =
-      SoyErrorKind.of("Undefined template ''{0}''.");
+      SoyErrorKind.of("Undefined template ''{0}''.{1}", StyleAllowance.NO_PUNCTUATION);
   private static final SoyErrorKind CALL_TO_INDIRECT_DEPENDENCY =
       SoyErrorKind.of(
-          "Call is satisfied only by indirect dependency {0}. Add it as a direct dependency.");
+          "Call is satisfied only by indirect dependency {0}. Add it as a direct dependency."
+          ,
+          StyleAllowance.NO_PUNCTUATION);
   private static final SoyErrorKind CALL_FROM_DEP_TO_SRC =
       SoyErrorKind.of(
           "Illegal call to ''{0}'', because according to the dependency graph, {1} depends on {2}, "
@@ -57,28 +61,35 @@ public final class StrictDepsVisitor extends AbstractSoyNodeVisitor<Void> {
     this.errorReporter = errorReporter;
   }
 
-
   // -----------------------------------------------------------------------------------------------
   // Implementations for specific nodes.
-
 
   // TODO(gboyer): Consider some deltemplate checking, but it's hard to make a coherent case for
   // deltemplates since it's legitimate to have zero implementations, or to have the implementation
   // in a different part of the dependency graph (if it's late-bound).
-  @Override protected void visitCallBasicNode(CallBasicNode node) {
+  @Override
+  protected void visitCallBasicNode(CallBasicNode node) {
     TemplateNode callee = templateRegistry.getBasicTemplate(node.getCalleeName());
 
     if (callee == null) {
+      String extraErrorMessage =
+          SoyErrors.getDidYouMeanMessage(
+              templateRegistry.getBasicTemplatesMap().keySet(), node.getCalleeName());
       errorReporter.report(
-          node.getSourceLocation(), CALL_TO_UNDEFINED_TEMPLATE, node.getCalleeName());
+          node.getSourceLocation(),
+          CALL_TO_UNDEFINED_TEMPLATE,
+          node.getCalleeName(),
+          extraErrorMessage);
     } else {
       SoyFileKind callerKind = node.getNearestAncestor(SoyFileNode.class).getSoyFileKind();
       SoyFileKind calleeKind = callee.getParent().getSoyFileKind();
+      String callerFilePath = node.getSourceLocation().getFilePath();
+      String calleeFilePath = callee.getSourceLocation().getFilePath();
       if (calleeKind == SoyFileKind.INDIRECT_DEP && callerKind == SoyFileKind.SRC) {
         errorReporter.report(
             node.getSourceLocation(),
             CALL_TO_INDIRECT_DEPENDENCY,
-            callee.getSourceLocation().getFilePath());
+            calleeFilePath);
       }
 
       // Double check if a dep calls a source. We shouldn't usually see this since the dependency
@@ -88,8 +99,8 @@ public final class StrictDepsVisitor extends AbstractSoyNodeVisitor<Void> {
             node.getSourceLocation(),
             CALL_FROM_DEP_TO_SRC,
             callee.getTemplateNameForUserMsgs(),
-            callee.getSourceLocation().getFilePath(),
-            node.getSourceLocation().getFilePath());
+            calleeFilePath,
+            callerFilePath);
       }
     }
 
@@ -100,8 +111,8 @@ public final class StrictDepsVisitor extends AbstractSoyNodeVisitor<Void> {
   // -----------------------------------------------------------------------------------------------
   // Fallback implementation.
 
-
-  @Override protected void visitSoyNode(SoyNode node) {
+  @Override
+  protected void visitSoyNode(SoyNode node) {
     if (node instanceof ParentSoyNode<?>) {
       visitChildren((ParentSoyNode<?>) node);
     }

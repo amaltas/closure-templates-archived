@@ -16,98 +16,85 @@
 
 package com.google.template.soy.soytree;
 
-import static com.google.template.soy.soytree.AutoescapeMode.parseAutoEscapeMode;
-
-import com.google.common.base.Optional;
+import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
+import com.google.template.soy.base.internal.Identifier;
 import com.google.template.soy.error.ErrorReporter;
-import com.google.template.soy.error.SoyErrorKind;
-
 import java.util.List;
-
 import javax.annotation.Nullable;
 
-/**
- * A {@code {namespace ..}} declaration.
- */
+/** A {@code {namespace ..}} declaration. */
 public final class NamespaceDeclaration {
-  /** The default autoescape mode if none is specified in the command text. */
-  static final AutoescapeMode DEFAULT_FILE_WIDE_DEFAULT_AUTOESCAPE_MODE = 
-      AutoescapeMode.STRICT;
-
-  // A 'null' instance for classes with no namespace tag.
-  public static final NamespaceDeclaration NULL = new NamespaceDeclaration();
-  private static final SoyErrorKind UNSUPPORTED_ATTRIBUTE_KEY =
-      SoyErrorKind.of("Unsupported attribute ''{0}'', expected one of [{1}].");
-
-  private final String namespace;
-  private final Optional<AutoescapeMode> namespaceAutoescapeMode;
+  private final Identifier namespace;
   private final ImmutableList<String> requiredCssNamespaces;
   private final String cssBaseNamespace;
 
+  final ImmutableList<CommandTagAttribute> attrs;
+
   public NamespaceDeclaration(
-      String namespace, List<NameAttributePair> attrs, ErrorReporter errorReporter) {
-    AutoescapeMode defaultAutoescapeMode = null;
+      Identifier namespace, List<CommandTagAttribute> attrs, ErrorReporter errorReporter) {
     ImmutableList<String> requiredCssNamespaces = ImmutableList.of();
     String cssBaseNamespace = null;
-    for (NameAttributePair attr : attrs) {
-      switch (attr.getName()) {
+    for (CommandTagAttribute attr : attrs) {
+      switch (attr.getName().identifier()) {
         case "autoescape":
-          defaultAutoescapeMode =
-              parseAutoEscapeMode(attr.getValue(), attr.getLocation(), errorReporter);
+          AutoescapeMode mode = AutoescapeMode.forAttributeValue(attr.getValue());
+          if (mode == AutoescapeMode.STRICT) {
+            errorReporter.report(
+                attr.getName().location(),
+                CommandTagAttribute.EXPLICIT_DEFAULT_ATTRIBUTE,
+                "autoescape",
+                "strict");
+          } else {
+            errorReporter.report(
+                attr.getName().location(), CommandTagAttribute.NAMESPACE_AUTOESCAPE_ATTRIBUTE);
+          }
           break;
         case "requirecss":
-          requiredCssNamespaces = RequirecssUtils.parseRequirecssAttr(attr.getValue(),
-              attr.getLocation());
+          requiredCssNamespaces = attr.valueAsRequireCss(errorReporter);
           break;
         case "cssbase":
           cssBaseNamespace = attr.getValue();
           break;
+        case "stricthtml":
+          errorReporter.report(
+              attr.getName().location(), CommandTagAttribute.NAMESPACE_STRICTHTML_ATTRIBUTE);
+          break;
         default:
           errorReporter.report(
-              attr.getLocation(),
-              UNSUPPORTED_ATTRIBUTE_KEY,
-              attr.getName(),
-              ImmutableList.of("autoescape", "requirecss", "cssbase"));
+              attr.getName().location(),
+              CommandTagAttribute.UNSUPPORTED_ATTRIBUTE_KEY,
+              attr.getName().identifier(),
+              "namespace",
+              ImmutableList.of("cssbase", "requirecss"));
           break;
       }
     }
 
     this.namespace = namespace;
-    this.namespaceAutoescapeMode = Optional.fromNullable(defaultAutoescapeMode);
     this.requiredCssNamespaces = requiredCssNamespaces;
     this.cssBaseNamespace = cssBaseNamespace;
+    this.attrs = ImmutableList.copyOf(attrs);
   }
 
-  private NamespaceDeclaration() {
-    this.namespace = null;
-    this.namespaceAutoescapeMode = Optional.absent();
-    this.requiredCssNamespaces = ImmutableList.of();
-    this.cssBaseNamespace = null;
-  }
-  
-  public boolean isDefined() {
-    return this != NULL;
+  public String getNamespace() {
+    return namespace.identifier();
   }
 
-  public AutoescapeMode getDefaultAutoescapeMode() {
-    return namespaceAutoescapeMode.or(DEFAULT_FILE_WIDE_DEFAULT_AUTOESCAPE_MODE);
-  }
-
-  public Optional<AutoescapeMode> getAutoescapeMode() {
-    return namespaceAutoescapeMode;
-  }
-
-  @Nullable public String getNamespace() {
-    return namespace;
-  }
-
-  public ImmutableList<String> getRequiredCssNamespaces() {
+  ImmutableList<String> getRequiredCssNamespaces() {
     return requiredCssNamespaces;
   }
 
-  @Nullable public String getCssBaseNamespace() {
+  @Nullable
+  String getCssBaseNamespace() {
     return cssBaseNamespace;
   }
 
+  /** Returns an approximation of what the original source for this namespace looked like. */
+  public String toSourceString() {
+    return "{namespace "
+        + namespace.identifier()
+        + (attrs.isEmpty() ? "" : " " + Joiner.on(' ').join(attrs))
+        + "}\n";
+  }
 }

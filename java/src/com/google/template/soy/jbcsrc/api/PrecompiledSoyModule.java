@@ -25,7 +25,9 @@ import com.google.inject.Provides;
 import com.google.inject.Singleton;
 import com.google.inject.multibindings.OptionalBinder;
 import com.google.template.soy.jbcsrc.shared.CompiledTemplates;
+import com.google.template.soy.shared.internal.GuiceSimpleScope;
 import com.google.template.soy.shared.internal.SharedModule;
+import com.google.template.soy.shared.restricted.ApiCallScopeBindingAnnotations.ApiCall;
 import com.google.template.soy.shared.restricted.SoyFunction;
 import com.google.template.soy.shared.restricted.SoyPrintDirective;
 
@@ -50,12 +52,13 @@ public final class PrecompiledSoyModule extends AbstractModule {
   @Singleton
   @Precompiled
   SoySauce provideSoySauce(
-      SoySauceImpl.Factory factory,
+      @ApiCall GuiceSimpleScope scope,
       @Deltemplates Optional<ImmutableSet<String>> allDeltemplates,
       ImmutableMap<String, ? extends SoyFunction> functions,
       ImmutableMap<String, ? extends SoyPrintDirective> printDirectives) {
-    return factory.create(
+    return new SoySauceImpl(
         new CompiledTemplates(allDeltemplates.or(ImmutableSet.<String>of())),
+        scope,
         functions,
         printDirectives);
   }

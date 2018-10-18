@@ -23,8 +23,6 @@ import com.google.template.soy.soytree.PrintNode;
 import com.google.template.soy.soytree.RawTextNode;
 import com.google.template.soy.soytree.SoyNode;
 
-import javax.inject.Inject;
-
 /**
  * Overrides the JS code generation version of this visitor to not generate HTML/attribute params as
  * a JavaScript expression. This allows for generating formatted JavaScript for the Incremental DOM
@@ -32,12 +30,9 @@ import javax.inject.Inject;
  */
 final class IsComputableAsIncrementalDomExprsVisitor extends IsComputableAsJsExprsVisitor {
 
-  @Inject
-  IsComputableAsIncrementalDomExprsVisitor() {
-    super();
-  }
 
-  @Override protected Boolean visitCallParamContentNode(CallParamContentNode node) {
+  @Override
+  protected Boolean visitCallParamContentNode(CallParamContentNode node) {
     switch (node.getContentKind()) {
       case HTML:
       case ATTRIBUTES:
@@ -47,18 +42,21 @@ final class IsComputableAsIncrementalDomExprsVisitor extends IsComputableAsJsExp
     }
   }
 
-  @Override protected Boolean visitPrintNode(PrintNode node) {
+  @Override
+  protected Boolean visitPrintNode(PrintNode node) {
     // idom prints HTML & attributes values by emitting function calls, not concatenable strings.
     return node.getHtmlContext() != HtmlContext.HTML_TAG
         && node.getHtmlContext() != HtmlContext.HTML_PCDATA;
   }
 
-  @Override protected Boolean visitRawTextNode(RawTextNode node) {
+  @Override
+  protected Boolean visitRawTextNode(RawTextNode node) {
     // idom prints HTML text content by emitting function calls, not concatenable strings.
     return node.getHtmlContext() != HtmlContext.HTML_PCDATA;
   }
 
-  @Override protected boolean canSkipChild(SoyNode child) {
+  @Override
+  protected boolean canSkipChild(SoyNode child) {
     // Cannot skip textual nodes, since some of them are not expressions (see above).
     return false;
   }

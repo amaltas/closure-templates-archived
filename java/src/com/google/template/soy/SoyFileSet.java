@@ -16,6 +16,9 @@
 
 package com.google.template.soy;
 
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
+
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
@@ -23,28 +26,27 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedSet;
+import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
 import com.google.common.io.ByteSink;
 import com.google.common.io.CharSource;
 import com.google.inject.Guice;
 import com.google.inject.Inject;
-import com.google.inject.Provider;
-import com.google.inject.assistedinject.Assisted;
-import com.google.inject.util.Providers;
+import com.google.protobuf.Descriptors.GenericDescriptor;
 import com.google.template.soy.SoyFileSetParser.ParseResult;
-import com.google.template.soy.base.SoySyntaxException;
 import com.google.template.soy.base.internal.SoyFileKind;
 import com.google.template.soy.base.internal.SoyFileSupplier;
+import com.google.template.soy.base.internal.TriState;
 import com.google.template.soy.base.internal.VolatileSoyFileSupplier;
+import com.google.template.soy.basetree.CopyState;
 import com.google.template.soy.basetree.SyntaxVersion;
-import com.google.template.soy.conformance.CheckConformance;
-import com.google.template.soy.conformance.ConformanceInput;
-import com.google.template.soy.error.PrettyErrorFactory;
-import com.google.template.soy.error.SnippetFormatter;
+import com.google.template.soy.conformance.ValidatedConformanceConfig;
+import com.google.template.soy.error.ErrorReporter;
 import com.google.template.soy.error.SoyCompilationException;
 import com.google.template.soy.error.SoyError;
+import com.google.template.soy.error.SoyErrors;
 import com.google.template.soy.incrementaldomsrc.IncrementalDomSrcMain;
+import com.google.template.soy.incrementaldomsrc.SoyIncrementalDomSrcOptions;
 import com.google.template.soy.jbcsrc.BytecodeCompiler;
 import com.google.template.soy.jbcsrc.api.SoySauce;
 import com.google.template.soy.jbcsrc.api.SoySauceImpl;
@@ -52,16 +54,16 @@ import com.google.template.soy.jbcsrc.shared.CompiledTemplate;
 import com.google.template.soy.jbcsrc.shared.CompiledTemplates;
 import com.google.template.soy.jssrc.SoyJsSrcOptions;
 import com.google.template.soy.jssrc.internal.JsSrcMain;
+import com.google.template.soy.logging.LoggingConfig;
+import com.google.template.soy.logging.ValidatedLoggingConfig;
 import com.google.template.soy.msgs.SoyMsgBundle;
 import com.google.template.soy.msgs.SoyMsgBundleHandler;
+import com.google.template.soy.msgs.SoyMsgBundleHandler.OutputFileOptions;
+import com.google.template.soy.msgs.SoyMsgPlugin;
 import com.google.template.soy.msgs.internal.ExtractMsgsVisitor;
 import com.google.template.soy.msgs.restricted.SoyMsg;
 import com.google.template.soy.msgs.restricted.SoyMsgBundleImpl;
 import com.google.template.soy.parseinfo.passes.GenerateParseInfoVisitor;
-import com.google.template.soy.parsepasses.contextautoesc.ContentSecurityPolicyPass;
-import com.google.template.soy.parsepasses.contextautoesc.ContextualAutoescaper;
-import com.google.template.soy.parsepasses.contextautoesc.DerivedTemplateUtils;
-import com.google.template.soy.passes.ChangeCallsToPassAllDataVisitor;
 import com.google.template.soy.passes.ClearSoyDocStringsVisitor;
 import com.google.template.soy.passes.FindIjParamsVisitor;
 import com.google.template.soy.passes.FindIjParamsVisitor.IjParamsInfo;
@@ -72,29 +74,27 @@ import com.google.template.soy.pysrc.SoyPySrcOptions;
 import com.google.template.soy.pysrc.internal.PySrcMain;
 import com.google.template.soy.shared.SoyAstCache;
 import com.google.template.soy.shared.SoyGeneralOptions;
+import com.google.template.soy.shared.internal.GuiceSimpleScope;
 import com.google.template.soy.shared.internal.MainEntryPointUtils;
+import com.google.template.soy.shared.restricted.ApiCallScopeBindingAnnotations.ApiCall;
 import com.google.template.soy.shared.restricted.SoyFunction;
 import com.google.template.soy.shared.restricted.SoyPrintDirective;
-import com.google.template.soy.sharedpasses.opti.SimplifyVisitor;
+import com.google.template.soy.soyparse.PluginResolver;
 import com.google.template.soy.soytree.SoyFileNode;
 import com.google.template.soy.soytree.SoyFileSetNode;
-import com.google.template.soy.soytree.SoytreeUtils;
-import com.google.template.soy.soytree.TemplateDelegateNode;
 import com.google.template.soy.soytree.TemplateNode;
 import com.google.template.soy.soytree.TemplateRegistry;
 import com.google.template.soy.soytree.Visibility;
 import com.google.template.soy.tofu.SoyTofu;
-import com.google.template.soy.tofu.internal.BaseTofu.BaseTofuFactory;
+import com.google.template.soy.tofu.internal.BaseTofu;
 import com.google.template.soy.types.SoyTypeRegistry;
-import com.google.template.soy.xliffmsgplugin.XliffMsgPlugin;
-
 import java.io.File;
 import java.io.IOException;
 import java.net.URL;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
-
-import javax.annotation.CheckReturnValue;
+import java.util.logging.Logger;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
@@ -102,44 +102,49 @@ import javax.annotation.Nullable;
  * Represents a complete set of Soy files for compilation as one bundle. The files may depend on
  * each other but should not have dependencies outside of the set.
  *
- * <p> Note: Soy file (or resource) contents must be encoded in UTF-8.
+ * <p>Note: Soy file (or resource) contents must be encoded in UTF-8.
  *
  */
 public final class SoyFileSet {
-
+  private static final Logger logger = Logger.getLogger(SoyFileSet.class.getName());
 
   /**
    * Creates a builder with the standard set of Soy directives, functions, and types.
    *
    * <p>If you need additional directives, functions, or types, create the Builder instance using
-   * Guice.  If your project doesn't otherwise use Guice, you can just use Guice.createInjector
-   * with only the modules you need, similar to the implementation of this method.
+   * Guice. If your project doesn't otherwise use Guice, you can just use Guice.createInjector with
+   * only the modules you need, similar to the implementation of this method.
    */
-  @SuppressWarnings("deprecation")
   public static Builder builder() {
-    Builder builder = new Builder();
-    // We inject based on a plain SoyModule, rather than using GuiceInitializer, to avoid relying
-    // on whatever lingering static state is around.
-    builder.setFactory(
-        Guice.createInjector(new SoyModule()).getInstance(SoyFileSetFactory.class));
-    return builder;
+    return Guice.createInjector(new SoyModule()).getInstance(Builder.class);
+  }
+
+  // Implementation detail of SoyFileSet.Builder.
+  // having it as its own 'parameter' class removes a small amount of boilerplate.
+  static final class CoreDependencies {
+    private final GuiceSimpleScope apiCallScope;
+    private final ImmutableMap<String, ? extends SoyFunction> soyFunctionMap;
+    private final ImmutableMap<String, ? extends SoyPrintDirective> printDirectives;
+
+    @Inject
+    CoreDependencies(
+        @ApiCall GuiceSimpleScope apiCallScope,
+        ImmutableMap<String, ? extends SoyFunction> soyFunctionMap,
+        ImmutableMap<String, ? extends SoyPrintDirective> printDirectives) {
+      this.apiCallScope = apiCallScope;
+      this.soyFunctionMap = soyFunctionMap;
+      this.printDirectives = printDirectives;
+    }
   }
 
   /**
    * Builder for a {@code SoyFileSet}.
+   *
+   * <p>Instances of this can be obtained by calling {@link #builder()} or by installing {@link
+   * SoyModule} and injecting it.
    */
   public static final class Builder {
-
-    /**
-     * Assisted-injection factory. This is optionally injected since many clients inject
-     * SoyFileSet.Builder without installing a SoyModule, in which case we need to fall back to
-     * static injection.
-     */
-    private SoyFileSetFactory factory;
-
-    /**
-     * The SoyFileSuppliers collected so far in added order, as a set to prevent dupes.
-     */
+    /** The SoyFileSuppliers collected so far in added order, as a set to prevent dupes. */
     private final ImmutableMap.Builder<String, SoyFileSupplier> filesBuilder;
 
     /** Optional AST cache. */
@@ -148,31 +153,22 @@ public final class SoyFileSet {
     /** The general compiler options. */
     private SoyGeneralOptions lazyGeneralOptions;
 
-    /** Type registry for this fileset only. */
-    private SoyTypeRegistry localTypeRegistry;
+    private final CoreDependencies coreDependencies;
 
-    /**
-     * Constructs a builder using a statically-injected configuration.
-     *
-     * @deprecated Use the static SoyFileSet.builder() method, or  inject SoyFileSet.Builder
-     *     using Guice with SoyModule installed. The behavior of this builder is unpredictable and
-     *     will use the Soy configuration from the most recently configured Injector containing a
-     *     SoyModule, because it relies on Guice's static injection.
-     */
-    @Inject
-    @Deprecated
-    public Builder() {
+    /** The SoyProtoTypeProvider builder that will be built for local type registry. */
+    private final SoyTypeRegistry.Builder typeRegistryBuilder = new SoyTypeRegistry.Builder();
+
+    @Nullable private Appendable warningSink;
+
+    private ValidatedConformanceConfig conformanceConfig = ValidatedConformanceConfig.EMPTY;
+
+    private ValidatedLoggingConfig loggingConfig = ValidatedLoggingConfig.EMPTY;
+
+    Builder(CoreDependencies coreDependencies) {
+      this.coreDependencies = coreDependencies;
       this.filesBuilder = ImmutableMap.builder();
       this.cache = null;
       this.lazyGeneralOptions = null;
-    }
-
-    @Inject(optional = true)
-    /** Assigns the factory via Guice. */
-    void setFactory(SoyFileSetFactory factory) {
-      // Yay, we have Guice, and SoyModule is installed! :-) Inject the factory from the relevant
-      // Injector!
-      this.factory = factory;
     }
 
     /**
@@ -181,7 +177,8 @@ public final class SoyFileSet {
      * <p>This must be called before any other setters.
      */
     public void setGeneralOptions(SoyGeneralOptions generalOptions) {
-      Preconditions.checkState(lazyGeneralOptions == null,
+      Preconditions.checkState(
+          lazyGeneralOptions == null,
           "Call SoyFileSet#setGeneralOptions before any other setters.");
       Preconditions.checkNotNull(generalOptions, "Non-null argument expected.");
       lazyGeneralOptions = generalOptions.clone();
@@ -191,7 +188,7 @@ public final class SoyFileSet {
      * Returns and/or lazily-creates the SoyGeneralOptions for this builder.
      *
      * <p>Laziness is an important feature to ensure that setGeneralOptions can fail if options were
-     * already set.  Otherwise, it'd be easy to set some options on this builder and overwrite them
+     * already set. Otherwise, it'd be easy to set some options on this builder and overwrite them
      * by calling setGeneralOptions.
      */
     private SoyGeneralOptions getGeneralOptions() {
@@ -201,19 +198,24 @@ public final class SoyFileSet {
       return lazyGeneralOptions;
     }
 
-
     /**
      * Builds the new {@code SoyFileSet}.
+     *
      * @return The new {@code SoyFileSet}.
      */
     public SoyFileSet build() {
-      if (factory == null) {
-        factory = GuiceInitializer.getHackySoyFileSetFactory();
-      }
-      return factory.create(
-          filesBuilder.build(), cache, getGeneralOptions(), localTypeRegistry);
+      return new SoyFileSet(
+          coreDependencies.apiCallScope,
+          typeRegistryBuilder.build(),
+          coreDependencies.soyFunctionMap,
+          coreDependencies.printDirectives,
+          filesBuilder.build(),
+          getGeneralOptions(),
+          cache,
+          conformanceConfig,
+          loggingConfig,
+          warningSink);
     }
-
 
     /**
      * Adds an input Soy file, given a {@code CharSource} for the file content, as well as the
@@ -224,24 +226,9 @@ public final class SoyFileSet {
      * @param filePath The path to the Soy file (used for messages only).
      * @return This builder.
      */
-    public Builder addWithKind(
-        CharSource contentSource, SoyFileKind soyFileKind, String filePath) {
+    public Builder addWithKind(CharSource contentSource, SoyFileKind soyFileKind, String filePath) {
       return addFile(SoyFileSupplier.Factory.create(contentSource, soyFileKind, filePath));
     }
-
-
-    /**
-     * Adds an input Soy file, given a {@code CharSource} for the file content, as well as the
-     * desired file path for messages.
-     *
-     * @param contentSource Source for the Soy file content.
-     * @param filePath The path to the Soy file (used for messages only).
-     * @return This builder.
-     */
-    public Builder add(CharSource contentSource, String filePath) {
-      return addWithKind(contentSource, SoyFileKind.SRC, filePath);
-    }
-
 
     /**
      * Adds an input Soy file, given a {@code File}.
@@ -253,49 +240,6 @@ public final class SoyFileSet {
     public Builder addWithKind(File inputFile, SoyFileKind soyFileKind) {
       return addFile(SoyFileSupplier.Factory.create(inputFile, soyFileKind));
     }
-
-
-    /**
-     * Adds an input Soy file, given a {@code File}.
-     *
-     * @param inputFile The Soy file.
-     * @return This builder.
-     */
-    public Builder add(File inputFile) {
-      return addWithKind(inputFile, SoyFileKind.SRC);
-    }
-
-
-    /**
-     * Adds an input Soy file that supports checking for modifications, given a {@code File}.
-     *
-     * <p>Note: This does nothing by itself. It should be used in conjunction with a feature that
-     * actually checks for volatile files. Currently, that feature is
-     * {@link #setSoyAstCache(SoyAstCache)}.
-     *
-     * @param inputFile The Soy file.
-     * @param soyFileKind The kind of this input Soy file.
-     * @return This builder.
-     */
-    public Builder addVolatileWithKind(File inputFile, SoyFileKind soyFileKind) {
-      return addFile(new VolatileSoyFileSupplier(inputFile, soyFileKind));
-    }
-
-
-    /**
-     * Adds an input Soy file that supports checking for modifications, given a {@code File}.
-     *
-     * <p>Note: This does nothing by itself. It should be used in conjunction with a feature that
-     * actually checks for volatile files. Currently, that feature is
-     * {@link #setSoyAstCache(SoyAstCache)}.
-     *
-     * @param inputFile The Soy file.
-     * @return This builder.
-     */
-    public Builder addVolatile(File inputFile) {
-      return addVolatileWithKind(inputFile, SoyFileKind.SRC);
-    }
-
 
     /**
      * Adds an input Soy file, given a resource {@code URL}, as well as the desired file path for
@@ -310,26 +254,12 @@ public final class SoyFileSet {
       return addFile(SoyFileSupplier.Factory.create(inputFileUrl, soyFileKind, filePath));
     }
 
-
-    /**
-     * Adds an input Soy file, given a resource {@code URL}, as well as the desired file path for
-     * messages.
-     *
-     * @param inputFileUrl The Soy file.
-     * @param filePath The path to the Soy file (used for messages only).
-     * @return This builder.
-     */
-    public Builder add(URL inputFileUrl, String filePath) {
-      return addWithKind(inputFileUrl, SoyFileKind.SRC, filePath);
-    }
-
-
     /**
      * Adds an input Soy file, given a resource {@code URL}.
      *
-     * <p> Important: This function assumes that the desired file path is returned by
-     * {@code inputFileUrl.toString()}. If this is not the case, please use
-     * {@link #addWithKind(URL, SoyFileKind, String)} instead.
+     * <p>Important: This function assumes that the desired file path is returned by {@code
+     * inputFileUrl.toString()}. If this is not the case, please use {@link #addWithKind(URL,
+     * SoyFileKind, String)} instead.
      *
      * @see #addWithKind(URL, SoyFileKind, String)
      * @param inputFileUrl The Soy file.
@@ -339,23 +269,6 @@ public final class SoyFileSet {
     public Builder addWithKind(URL inputFileUrl, SoyFileKind soyFileKind) {
       return addFile(SoyFileSupplier.Factory.create(inputFileUrl, soyFileKind));
     }
-
-
-    /**
-     * Adds an input Soy file, given a resource {@code URL}.
-     *
-     * <p> Important: This function assumes that the desired file path is returned by
-     * {@code inputFileUrl.toString()}. If this is not the case, please use
-     * {@link #add(URL, String)} instead.
-     *
-     * @see #add(URL, String)
-     * @param inputFileUrl The Soy file.
-     * @return This builder.
-     */
-    public Builder add(URL inputFileUrl) {
-      return addWithKind(inputFileUrl, SoyFileKind.SRC);
-    }
-
 
     /**
      * Adds an input Soy file, given the file content provided as a string, as well as the desired
@@ -370,6 +283,44 @@ public final class SoyFileSet {
       return addFile(SoyFileSupplier.Factory.create(content, soyFileKind, filePath));
     }
 
+    /**
+     * Adds an input Soy file, given a {@code CharSource} for the file content, as well as the
+     * desired file path for messages.
+     *
+     * @param contentSource Source for the Soy file content.
+     * @param filePath The path to the Soy file (used for messages only).
+     * @return This builder.
+     */
+    public Builder add(CharSource contentSource, String filePath) {
+      return addWithKind(contentSource, SoyFileKind.SRC, filePath);
+    }
+
+    /**
+     * Adds an input Soy file, given a resource {@code URL}, as well as the desired file path for
+     * messages.
+     *
+     * @param inputFileUrl The Soy file.
+     * @param filePath The path to the Soy file (used for messages only).
+     * @return This builder.
+     */
+    public Builder add(URL inputFileUrl, String filePath) {
+      return addWithKind(inputFileUrl, SoyFileKind.SRC, filePath);
+    }
+
+    /**
+     * Adds an input Soy file, given a resource {@code URL}.
+     *
+     * <p>Important: This function assumes that the desired file path is returned by {@code
+     * inputFileUrl.toString()}. If this is not the case, please use {@link #add(URL, String)}
+     * instead.
+     *
+     * @see #add(URL, String)
+     * @param inputFileUrl The Soy file.
+     * @return This builder.
+     */
+    public Builder add(URL inputFileUrl) {
+      return addWithKind(inputFileUrl, SoyFileKind.SRC);
+    }
 
     /**
      * Adds an input Soy file, given the file content provided as a string, as well as the desired
@@ -383,6 +334,44 @@ public final class SoyFileSet {
       return addWithKind(content, SoyFileKind.SRC, filePath);
     }
 
+    /**
+     * Adds an input Soy file, given a {@code File}.
+     *
+     * @param inputFile The Soy file.
+     * @return This builder.
+     */
+    public Builder add(File inputFile) {
+      return addWithKind(inputFile, SoyFileKind.SRC);
+    }
+
+    /**
+     * Adds an input Soy file that supports checking for modifications, given a {@code File}.
+     *
+     * <p>Note: This does nothing by itself. It should be used in conjunction with a feature that
+     * actually checks for volatile files. Currently, that feature is {@link
+     * #setSoyAstCache(SoyAstCache)}.
+     *
+     * @param inputFile The Soy file.
+     * @param soyFileKind The kind of this input Soy file.
+     * @return This builder.
+     */
+    public Builder addVolatileWithKind(File inputFile, SoyFileKind soyFileKind) {
+      return addFile(new VolatileSoyFileSupplier(inputFile, soyFileKind));
+    }
+
+    /**
+     * Adds an input Soy file that supports checking for modifications, given a {@code File}.
+     *
+     * <p>Note: This does nothing by itself. It should be used in conjunction with a feature that
+     * actually checks for volatile files. Currently, that feature is {@link
+     * #setSoyAstCache(SoyAstCache)}.
+     *
+     * @param inputFile The Soy file.
+     * @return This builder.
+     */
+    public Builder addVolatile(File inputFile) {
+      return addVolatileWithKind(inputFile, SoyFileKind.SRC);
+    }
 
     /**
      * Configures to use an AST cache to speed up development time.
@@ -390,8 +379,8 @@ public final class SoyFileSet {
      * <p>This is undesirable in production mode since it uses strictly more memory, and this only
      * helps if the same templates are going to be recompiled frequently.
      *
-     * @param cache The cache to use, which can have a lifecycle independent of the SoyFileSet.
-     *     Null indicates not to use a cache.
+     * @param cache The cache to use, which can have a lifecycle independent of the SoyFileSet. Null
+     *     indicates not to use a cache.
      * @return This builder.
      */
     public Builder setSoyAstCache(SoyAstCache cache) {
@@ -399,16 +388,15 @@ public final class SoyFileSet {
       return this;
     }
 
-
     /**
      * Sets the user-declared syntax version name for the Soy file bundle.
+     *
      * @param versionName The syntax version name, e.g. "1.0", "2.0", "2.3".
      */
     public Builder setDeclaredSyntaxVersionName(@Nonnull String versionName) {
       getGeneralOptions().setDeclaredSyntaxVersionName(versionName);
       return this;
     }
-
 
     /**
      * Sets whether to allow external calls (calls to undefined templates).
@@ -421,6 +409,31 @@ public final class SoyFileSet {
       return this;
     }
 
+    /**
+     * Sets experimental features. These features are unreleased and are not generally available.
+     *
+     * @param experimentalFeatures
+     * @return This builder.
+     */
+    public Builder setExperimentalFeatures(List<String> experimentalFeatures) {
+      getGeneralOptions().setExperimentalFeatures(experimentalFeatures);
+      return this;
+    }
+
+    /**
+     * Disables optimizer. The optimizer tries to simplify the Soy AST by evaluating constant
+     * expressions. It generally improves performance and should only be disabled in integration
+     * tests.
+     *
+     * <p>This is public only because we need to set it in {@code SoyFileSetHelper}, that are
+     * necessary for integration tests. Normal users should not use this.
+     *
+     * @return This builder.
+     */
+    public Builder disableOptimizer() {
+      getGeneralOptions().disableOptimizer();
+      return this;
+    }
 
     /**
      * Sets whether to force strict autoescaping. Enabling will cause compile time exceptions if
@@ -434,37 +447,37 @@ public final class SoyFileSet {
       return this;
     }
 
-
     /**
      * Sets the map from compile-time global name to value.
      *
-     * <p> The values can be any of the Soy primitive types: null, boolean, integer, float (Java
+     * <p>The values can be any of the Soy primitive types: null, boolean, integer, float (Java
      * double), or string.
      *
      * @param compileTimeGlobalsMap Map from compile-time global name to value. The values can be
      *     any of the Soy primitive types: null, boolean, integer, float (Java double), or string.
      * @return This builder.
-     * @throws SoySyntaxException If one of the values is not a valid Soy primitive type.
+     * @throws IllegalArgumentException If one of the values is not a valid Soy primitive type.
      */
     public Builder setCompileTimeGlobals(Map<String, ?> compileTimeGlobalsMap) {
       getGeneralOptions().setCompileTimeGlobals(compileTimeGlobalsMap);
       return this;
     }
 
-
     /**
      * Sets the file containing compile-time globals.
      *
-     * <p> Each line of the file should have the format
+     * <p>Each line of the file should have the format
+     *
      * <pre>
      *     &lt;global_name&gt; = &lt;primitive_data&gt;
      * </pre>
+     *
      * where primitive_data is a valid Soy expression literal for a primitive type (null, boolean,
      * integer, float, or string). Empty lines and lines beginning with "//" are ignored. The file
      * should be encoded in UTF-8.
      *
-     * <p> If you need to generate a file in this format from Java, consider using the utility
-     * {@code SoyUtils.generateCompileTimeGlobalsFile()}.
+     * <p>If you need to generate a file in this format from Java, consider using the utility {@code
+     * SoyUtils.generateCompileTimeGlobalsFile()}.
      *
      * @param compileTimeGlobalsFile The file containing compile-time globals.
      * @return This builder.
@@ -475,20 +488,21 @@ public final class SoyFileSet {
       return this;
     }
 
-
     /**
      * Sets the resource file containing compile-time globals.
      *
-     * <p> Each line of the file should have the format
+     * <p>Each line of the file should have the format
+     *
      * <pre>
      *     &lt;global_name&gt; = &lt;primitive_data&gt;
      * </pre>
+     *
      * where primitive_data is a valid Soy expression literal for a primitive type (null, boolean,
      * integer, float, or string). Empty lines and lines beginning with "//" are ignored. The file
      * should be encoded in UTF-8.
      *
-     * <p> If you need to generate a file in this format from Java, consider using the utility
-     * {@code SoyUtils.generateCompileTimeGlobalsFile()}.
+     * <p>If you need to generate a file in this format from Java, consider using the utility {@code
+     * SoyUtils.generateCompileTimeGlobalsFile()}.
      *
      * @param compileTimeGlobalsResource The resource containing compile-time globals.
      * @return This builder.
@@ -500,10 +514,37 @@ public final class SoyFileSet {
     }
 
     /**
-     * Override the global type registry with one that is local to this file set.
+     * Add all proto descriptors found in the file to the type registry.
+     *
+     * @param descriptorFile A file containing FileDescriptorSet binary protos. These typically end
+     *     in {@code .proto.bin}. Note that this isn't the same as a {@code .proto} source file.
      */
-    public Builder setLocalTypeRegistry(SoyTypeRegistry typeRegistry) {
-      localTypeRegistry = typeRegistry;
+    public Builder addProtoDescriptorsFromFile(File descriptorFile) throws IOException {
+      typeRegistryBuilder.addFileDescriptorSetFromFile(descriptorFile);
+      return this;
+    }
+
+    /**
+     * Registers a collection of protocol buffer descriptors. This makes all the types defined in
+     * the provided descriptors available to use in soy.
+     */
+    public Builder addProtoDescriptors(GenericDescriptor... descriptors) {
+      return addProtoDescriptors(Arrays.asList(descriptors));
+    }
+
+    /**
+     * Registers a collection of protocol buffer descriptors. This makes all the types defined in
+     * the provided descriptors available to use in soy.
+     */
+    public Builder addProtoDescriptors(Iterable<? extends GenericDescriptor> descriptors) {
+      typeRegistryBuilder.addDescriptors(descriptors);
+      return this;
+    }
+
+    /** Registers a conformance config proto. */
+    Builder setConformanceConfig(ValidatedConformanceConfig config) {
+      checkNotNull(config);
+      this.conformanceConfig = config;
       return this;
     }
 
@@ -511,69 +552,48 @@ public final class SoyFileSet {
       filesBuilder.put(supplier.getFilePath(), supplier);
       return this;
     }
-  }
-
-
-  /**
-   * Injectable factory for creating an instance of this class.
-   */
-  public interface SoyFileSetFactory {
 
     /**
-     * @param soyFileSuppliers The suppliers for the input Soy files.
-     * @param cache Optional (nullable) AST cache for faster recompile times.
-     * @param options The general compiler options.
+     * Configures a place to write warnings for successful compilations.
+     *
+     * <p>For compilation failures warnings are reported along with the errors, by throwing an
+     * exception. The default is to report warnings to the logger for SoyFileSet.
      */
-    SoyFileSet create(
-        ImmutableMap<String, SoyFileSupplier> soyFileSuppliers,
-        SoyAstCache cache,
-        SoyGeneralOptions options,
-        @Assisted("localTypeRegistry") SoyTypeRegistry localTypeRegistry);
+    Builder setWarningSink(Appendable warningSink) {
+      this.warningSink = checkNotNull(warningSink);
+      return this;
+    }
+
+    /**
+     * Sets the logging config to use.
+     *
+     * @throws IllegalArgumentException if the config proto is invalid. For example, if there are
+     *     multiple elements with the same {@code name} or {@code id}, or if the name not a valid
+     *     identifier.
+     */
+    public Builder setLoggingConfig(LoggingConfig config) {
+      return setValidatedLoggingConfig(ValidatedLoggingConfig.create(config));
+    }
+
+    /** Sets the validated logging config to use. */
+    Builder setValidatedLoggingConfig(ValidatedLoggingConfig parseLoggingConfigs) {
+      this.loggingConfig = checkNotNull(parseLoggingConfigs);
+      return this;
+    }
   }
 
+  private final GuiceSimpleScope apiCallScopeProvider;
 
-  /** Default SoyMsgBundleHandler uses the XLIFF message plugin. */
-  private static final Provider<SoyMsgBundleHandler> DEFAULT_SOY_MSG_BUNDLE_HANDLER_PROVIDER =
-      Providers.of(new SoyMsgBundleHandler(new XliffMsgPlugin()));
-
-
-  /** Provider for getting an instance of SoyMsgBundleHandler. */
-  private Provider<SoyMsgBundleHandler> msgBundleHandlerProvider;
-
-  /** Factory for creating an instance of BaseTofu. */
-  private final BaseTofuFactory baseTofuFactory;
-
-  /** Factory for creating an instance of BaseTofu. */
-  private final SoySauceImpl.Factory soyTemplatesFactory;
-
-  /** Provider for getting an instance of JsSrcMain. */
-  private final Provider<JsSrcMain> jsSrcMainProvider;
-
-  /** Provider for getting an instance of IncrementalDomSrcMain. */
-  private final Provider<IncrementalDomSrcMain> incrementalDomSrcMainProvider;
-
-  /** Provider for getting an instance of PySrcMain. */
-  private final Provider<PySrcMain> pySrcMainProvider;
-
-  /** The instance of ContextualAutoescaper to use. */
-  private final ContextualAutoescaper contextualAutoescaper;
-
-  /** The instance of SimplifyVisitor to use. */
-  private final SimplifyVisitor simplifyVisitor;
-
-  /** The type registry for resolving type names. */
   private final SoyTypeRegistry typeRegistry;
-
-  /** The suppliers for the input Soy files. */
   private final ImmutableMap<String, SoyFileSupplier> soyFileSuppliers;
 
   /** Optional soy tree cache for faster recompile times. */
-  private final SoyAstCache cache;
+  @Nullable private final SoyAstCache cache;
 
-  /** The general compiler options. */
   private final SoyGeneralOptions generalOptions;
 
-  private CheckConformance checkConformance;
+  private final ValidatedConformanceConfig conformanceConfig;
+  private final ValidatedLoggingConfig loggingConfig;
 
   /** For private use by pruneTranslatedMsgs(). */
   private ImmutableSet<Long> memoizedExtractedMsgIdsForPruning;
@@ -582,80 +602,40 @@ public final class SoyFileSet {
   private final ImmutableMap<String, ? extends SoyPrintDirective> printDirectives;
 
   /** For reporting errors during parsing. */
-  private ErrorReporterImpl errorReporter;
+  private ErrorReporter errorReporter;
 
-  /**
-   * @param baseTofuFactory Factory for creating an instance of BaseTofu.
-   * @param jsSrcMainProvider Provider for getting an instance of JsSrcMain.
-   * @param incrementalDomSrcMainProvider Provider for getting an instance of IncrementalDomSrcMain.
-   * @param pySrcMainProvider Provider for getting an instance of PySrcMain.
-   * @param contextualAutoescaper The instance of ContextualAutoescaper to use.
-   * @param simplifyVisitor The instance of SimplifyVisitor to use.
-   * @param typeRegistry The type registry to resolve parameter type names.
-   * @param soyFileSuppliers The suppliers for the input Soy files.
-   * @param generalOptions The general compiler options.
-   * @param localTypeRegistry If non-null, use this local type registry instead
-   *        of the typeRegistry param which is a global singleton.
-   *        (Unfortunately because of the way assisted injection works, we need
-   *        the global and local registries to be separate parameters).
-   */
-  @Inject
+  @Nullable private final Appendable warningSink;
+
   SoyFileSet(
-      BaseTofuFactory baseTofuFactory,
-      SoySauceImpl.Factory soyTemplatesFactory,
-      Provider<JsSrcMain> jsSrcMainProvider,
-      Provider<IncrementalDomSrcMain> incrementalDomSrcMainProvider,
-      Provider<PySrcMain> pySrcMainProvider,
-      ContextualAutoescaper contextualAutoescaper,
-      SimplifyVisitor simplifyVisitor,
+      GuiceSimpleScope apiCallScopeProvider,
       SoyTypeRegistry typeRegistry,
       ImmutableMap<String, ? extends SoyFunction> soyFunctionMap,
       ImmutableMap<String, ? extends SoyPrintDirective> printDirectives,
-      @Assisted ImmutableMap<String, SoyFileSupplier> soyFileSuppliers,
-      @Assisted SoyGeneralOptions generalOptions,
-      @Assisted @Nullable SoyAstCache cache,
-      @Assisted("localTypeRegistry") @Nullable SoyTypeRegistry localTypeRegistry) {
-
-    // Default value is optionally replaced using method injection.
-    this.msgBundleHandlerProvider = DEFAULT_SOY_MSG_BUNDLE_HANDLER_PROVIDER;
-    this.soyTemplatesFactory = soyTemplatesFactory;
-    this.baseTofuFactory = baseTofuFactory;
-    this.jsSrcMainProvider = jsSrcMainProvider;
-    this.incrementalDomSrcMainProvider = incrementalDomSrcMainProvider;
-    this.pySrcMainProvider = pySrcMainProvider;
-    this.contextualAutoescaper = contextualAutoescaper;
-    this.simplifyVisitor = simplifyVisitor;
+      ImmutableMap<String, SoyFileSupplier> soyFileSuppliers,
+      SoyGeneralOptions generalOptions,
+      @Nullable SoyAstCache cache,
+      ValidatedConformanceConfig conformanceConfig,
+      ValidatedLoggingConfig loggingConfig,
+      @Nullable Appendable warningSink) {
+    this.apiCallScopeProvider = apiCallScopeProvider;
 
     Preconditions.checkArgument(
         !soyFileSuppliers.isEmpty(), "Must have non-zero number of input Soy files.");
-    this.typeRegistry = localTypeRegistry != null ? localTypeRegistry : typeRegistry;
+    this.typeRegistry = typeRegistry;
     this.soyFileSuppliers = soyFileSuppliers;
     this.cache = cache;
     this.generalOptions = generalOptions.clone();
     this.soyFunctionMap = soyFunctionMap;
     this.printDirectives = printDirectives;
-  }
-
-
-  /** @param msgBundleHandlerProvider Provider for getting an instance of SoyMsgBundleHandler. */
-  @Inject(optional = true)
-  void setMsgBundleHandlerProvider(Provider<SoyMsgBundleHandler> msgBundleHandlerProvider) {
-    this.msgBundleHandlerProvider = msgBundleHandlerProvider;
-  }
-
-  @Inject(optional = true)
-  void setCheckConformance(CheckConformance checkConformance) {
-    this.checkConformance = checkConformance;
+    this.conformanceConfig = checkNotNull(conformanceConfig);
+    this.loggingConfig = checkNotNull(loggingConfig);
+    this.warningSink = warningSink;
   }
 
   /** Returns the list of suppliers for the input Soy files. For testing use only! */
-  @VisibleForTesting ImmutableMap<String, SoyFileSupplier> getSoyFileSuppliersForTesting() {
+  @VisibleForTesting
+  ImmutableMap<String, SoyFileSupplier> getSoyFileSuppliersForTesting() {
     return soyFileSuppliers;
-  }
-
-  /** Returns the general compiler options. For testing use only! */
-  @VisibleForTesting SoyGeneralOptions getOptionsForTesting() {
-    return generalOptions;
   }
 
   /**
@@ -674,57 +654,100 @@ public final class SoyFileSet {
     // TODO(lukes): see if we can enforce that globals are provided at compile time here. given that
     // types have to be, this should be possible.  Currently it is disabled for backwards
     // compatibility
+    // N.B. we do not run the optimizer here for 2 reasons:
+    // 1. it would just waste time, since we are not running code generation the optimization work
+    //    doesn't help anything
+    // 2. it potentially removes metadata from the tree by precalculating expressions. For example,
+    //    trivial print nodes are evaluated, which can remove globals from the tree, but the
+    //    generator requires data about globals to generate accurate proto descriptors.  Also, the
+    //    ChangeCallsToPassAllData pass will change the params of templates.
     ParseResult result =
         parse(
-            SyntaxVersion.V2_0,
-            true /* allow unknown globals */,
-            true /* allow unknown functions */,
+            passManagerBuilder(SyntaxVersion.V2_0).allowUnknownGlobals().optimize(false),
             typeRegistry,
-            soyFunctionMap);
+            new PluginResolver(
+                // we allow undefined plugins since they typically aren't provided :(
+                PluginResolver.Mode.ALLOW_UNDEFINED,
+                printDirectives,
+                soyFunctionMap,
+                errorReporter));
     throwIfErrorsPresent();
 
     SoyFileSetNode soyTree = result.fileSet();
     TemplateRegistry registry = result.registry();
-    registry = runMiddleendPasses(registry, soyTree);
 
     // Do renaming of package-relative class names.
     ImmutableMap<String, String> parseInfo =
         new GenerateParseInfoVisitor(javaPackage, javaClassNameSource, registry).exec(soyTree);
     throwIfErrorsPresent();
+    reportWarnings();
     return parseInfo;
   }
 
   /**
-   * Extracts all messages from this Soy file set into a SoyMsgBundle (which can then be turned
-   * into an extracted messages file with the help of a SoyMsgBundleHandler).
+   * Extracts all messages from this Soy file set into a SoyMsgBundle (which can then be turned into
+   * an extracted messages file with the help of a SoyMsgBundleHandler).
    *
    * @return A SoyMsgBundle containing all the extracted messages (locale "en").
    * @throws SoyCompilationException If compilation fails.
    */
   public SoyMsgBundle extractMsgs() {
     resetErrorReporter();
-    SoyFileSetNode soyTree =
-        parse(
-                SyntaxVersion.V1_0,
-                true /* allow unknown globals */,
-                true /* allow unknown functions */,
-                SoyTypeRegistry.DEFAULT_UNKNOWN,
-                soyFunctionMap)
-            .fileSet();
-    SoyMsgBundle bundle = new ExtractMsgsVisitor().exec(soyTree);
-    // TODO(lukes): this should call throwIfErrorsPresent(), but can't because it will break
-    // build rules.
+    SoyMsgBundle bundle = doExtractMsgs();
+    reportWarnings();
     return bundle;
   }
 
+  /**
+   * Extracts all messages from this Soy file set and writes the messages to an output sink.
+   *
+   * @param msgBundleHandler Handler to write the messages.
+   * @param options Options to configure how to write the extracted messages.
+   * @param output Where to write the extracted messages.
+   * @throws IOException If there are errors writing to the output.
+   */
+  public void extractAndWriteMsgs(
+      SoyMsgBundleHandler msgBundleHandler, OutputFileOptions options, ByteSink output)
+      throws IOException {
+    resetErrorReporter();
+    SoyMsgBundle bundle = doExtractMsgs();
+    msgBundleHandler.writeExtractedMsgs(bundle, options, output, errorReporter);
+    throwIfErrorsPresent();
+    reportWarnings();
+  }
+
+  /** Performs the parsing and extraction logic. */
+  private SoyMsgBundle doExtractMsgs() {
+    // extractMsgs disables a bunch of passes since it is typically not configured with things
+    // like global definitions, type definitions, etc.
+    SoyFileSetNode soyTree =
+        parse(
+                passManagerBuilder(SyntaxVersion.V1_0)
+                    .allowUnknownGlobals()
+                    .setTypeRegistry(SoyTypeRegistry.DEFAULT_UNKNOWN)
+                    .disableAllTypeChecking(),
+                // override the type registry so that the parser doesn't report errors when it
+                // can't resolve strict types
+                SoyTypeRegistry.DEFAULT_UNKNOWN,
+                new PluginResolver(
+                    PluginResolver.Mode.ALLOW_UNDEFINED,
+                    printDirectives,
+                    soyFunctionMap,
+                    errorReporter))
+            .fileSet();
+    throwIfErrorsPresent();
+    SoyMsgBundle bundle = new ExtractMsgsVisitor().exec(soyTree);
+    throwIfErrorsPresent();
+    return bundle;
+  }
 
   /**
    * Prunes messages from a given message bundle, keeping only messages used in this Soy file set.
    *
-   * <p> Important: Do not use directly. This is subject to change and your code will break.
+   * <p>Important: Do not use directly. This is subject to change and your code will break.
    *
-   * <p> Note: This method memoizes intermediate results to improve efficiency in the case that it
-   * is called multiple times (which is a common case). Thus, this method will not work correctly if
+   * <p>Note: This method memoizes intermediate results to improve efficiency in the case that it is
+   * called multiple times (which is a common case). Thus, this method will not work correctly if
    * the underlying Soy files are modified between calls to this method.
    *
    * @param origTransMsgBundle The message bundle to prune.
@@ -740,12 +763,17 @@ public final class SoyFileSet {
     if (memoizedExtractedMsgIdsForPruning == null) {
       ParseResult result =
           parse(
-              SyntaxVersion.V1_0,
-              true /* allow unknown globals */,
-              true /* allow unknown functions */,
+              passManagerBuilder(SyntaxVersion.V1_0).allowUnknownGlobals().disableAllTypeChecking(),
+              // override the type registry so that the parser doesn't report errors when it
+              // can't resolve strict types
               SoyTypeRegistry.DEFAULT_UNKNOWN,
-              soyFunctionMap);
+              new PluginResolver(
+                  PluginResolver.Mode.ALLOW_UNDEFINED,
+                  printDirectives,
+                  soyFunctionMap,
+                  errorReporter));
 
+      throwIfErrorsPresent();
       SoyFileSetNode soyTree = result.fileSet();
       TemplateRegistry registry = result.registry();
 
@@ -763,13 +791,14 @@ public final class SoyFileSet {
       TransitiveDepTemplatesInfo mergedDepsInfo =
           TransitiveDepTemplatesInfo.merge(depsInfoMap.values());
 
-      SoyMsgBundle extractedMsgBundle = new ExtractMsgsVisitor()
-          .execOnMultipleNodes(mergedDepsInfo.depTemplateSet);
+      SoyMsgBundle extractedMsgBundle =
+          new ExtractMsgsVisitor().execOnMultipleNodes(mergedDepsInfo.depTemplateSet);
 
       ImmutableSet.Builder<Long> extractedMsgIdsBuilder = ImmutableSet.builder();
       for (SoyMsg extractedMsg : extractedMsgBundle) {
         extractedMsgIdsBuilder.add(extractedMsg.getId());
       }
+      throwIfErrorsPresent();
       memoizedExtractedMsgIdsForPruning = extractedMsgIdsBuilder.build();
     }
 
@@ -781,8 +810,7 @@ public final class SoyFileSet {
         prunedTransMsgsBuilder.add(transMsg);
       }
     }
-    // TODO(lukes): this should call throwIfErrorsPresent(), but can't because it will break
-    // build rules.
+    throwIfErrorsPresent();
     return new SoyMsgBundleImpl(
         origTransMsgBundle.getLocaleString(), prunedTransMsgsBuilder.build());
   }
@@ -798,26 +826,29 @@ public final class SoyFileSet {
     resetErrorReporter();
     ServerCompilationPrimitives primitives = compileForServerRendering();
     throwIfErrorsPresent();
-    return doCompileToTofu(primitives);
+    SoyTofu tofu = doCompileToTofu(primitives);
+
+    reportWarnings();
+    return tofu;
   }
 
   /** Helper method to compile SoyTofu from {@link ServerCompilationPrimitives} */
   private SoyTofu doCompileToTofu(ServerCompilationPrimitives primitives) {
-    return baseTofuFactory.create(
+    return new BaseTofu(
+        apiCallScopeProvider,
         primitives.registry,
-        getTransitiveIjs(primitives.soyTree, primitives.registry),
-        printDirectives);
+        getTransitiveIjs(primitives.soyTree, primitives.registry));
   }
 
   /**
-   * This is an <em>extremely experimental API</em> and subject to change.  Not all features of soy
-   * are implemented in this new backend and the features that are implemented are not necessarily
-   * correct!
+   * Compiles this Soy file set into a set of java classes implementing the {@link SoySauce}
+   * interface.
    *
-   * <p>See com/google/template/soy/jbcsrc/README.md for background on this new backend.
-   *
-   * <p>Compiles this Soy file set into a set of java classes implementing the
-   * {@link CompiledTemplate} interface.
+   * <p>This is useful for implementing 'edit refresh' workflows. Most production usecases should
+   * use the command line interface to 'ahead of time' compile templates to jar files and then use
+   * {@code PrecompiledSoyModule} to get access to a {@link SoySauce} object without invoking the
+   * compiler. This will allow applications to avoid invoking the soy compiler at runtime which can
+   * be relatively slow.
    *
    * @return A set of compiled templates
    * @throws SoyCompilationException If compilation fails.
@@ -827,12 +858,15 @@ public final class SoyFileSet {
     disallowExternalCalls();
     ServerCompilationPrimitives primitives = compileForServerRendering();
     throwIfErrorsPresent();
-    return doCompileSoySauce(primitives);
+    SoySauce sauce = doCompileSoySauce(primitives);
+
+    reportWarnings();
+    return sauce;
   }
 
   /**
-   * <p>Compiles this Soy file set into a set of java classes implementing the
-   * {@link CompiledTemplate} interface and writes them out to the given ByteSink as a JAR file.
+   * Compiles this Soy file set into a set of java classes implementing the {@link CompiledTemplate}
+   * interface and writes them out to the given ByteSink as a JAR file.
    *
    * @throws SoyCompilationException If compilation fails.
    */
@@ -845,6 +879,7 @@ public final class SoyFileSet {
       BytecodeCompiler.writeSrcJar(primitives.registry, soyFileSuppliers, srcJarTarget.get());
     }
     throwIfErrorsPresent();
+    reportWarnings();
   }
 
   /** Helper method to compile SoySauce from {@link ServerCompilationPrimitives} */
@@ -858,7 +893,7 @@ public final class SoyFileSet {
 
     throwIfErrorsPresent();
 
-    return soyTemplatesFactory.create(templates.get(), soyFunctionMap, printDirectives);
+    return new SoySauceImpl(templates.get(), apiCallScopeProvider, soyFunctionMap, printDirectives);
   }
 
   /**
@@ -875,17 +910,13 @@ public final class SoyFileSet {
     }
   }
 
-  /**
-   * Runs common compiler logic shared by tofu and jbcsrc backends.
-   */
+  /** Runs common compiler logic shared by tofu and jbcsrc backends. */
   private ServerCompilationPrimitives compileForServerRendering() {
     ParseResult result = parse(SyntaxVersion.V2_0);
     throwIfErrorsPresent();
 
     SoyFileSetNode soyTree = result.fileSet();
     TemplateRegistry registry = result.registry();
-    registry = runMiddleendPasses(registry, soyTree);
-
     // Clear the SoyDoc strings because they use unnecessary memory, unless we have a cache, in
     // which case it is pointless.
     if (cache == null) {
@@ -899,8 +930,7 @@ public final class SoyFileSet {
   private ImmutableMap<String, ImmutableSortedSet<String>> getTransitiveIjs(
       SoyFileSetNode soyTree, TemplateRegistry registry) {
     ImmutableMap<TemplateNode, IjParamsInfo> templateToIjParamsInfoMap =
-        new FindIjParamsVisitor(registry)
-            .execOnAllTemplates(soyTree);
+        new FindIjParamsVisitor(registry).execOnAllTemplates(soyTree);
     ImmutableMap.Builder<String, ImmutableSortedSet<String>> templateToTransitiveIjParams =
         ImmutableMap.builder();
     for (Map.Entry<TemplateNode, IjParamsInfo> entry : templateToIjParamsInfoMap.entrySet()) {
@@ -911,14 +941,26 @@ public final class SoyFileSet {
   }
 
   private void disallowExternalCalls() {
-    Boolean allowExternalCalls = generalOptions.allowExternalCalls();
-    if (allowExternalCalls == null) {
+    TriState allowExternalCalls = generalOptions.allowExternalCalls();
+    if (allowExternalCalls == TriState.UNSET) {
       generalOptions.setAllowExternalCalls(false);
-    } else if (allowExternalCalls) {
+    } else if (allowExternalCalls == TriState.ENABLED) {
       throw new IllegalStateException(
           "SoyGeneralOptions.setAllowExternalCalls(true) is not supported with this method");
     }
     // otherwise, it was already explicitly set to false which is what we want.
+  }
+
+  private void requireStrictAutoescaping() {
+    TriState strictAutoescapingRequired = generalOptions.isStrictAutoescapingRequired();
+    if (strictAutoescapingRequired == TriState.UNSET) {
+      generalOptions.setStrictAutoescapingRequired(true);
+    } else if (strictAutoescapingRequired == TriState.DISABLED) {
+      throw new IllegalStateException(
+          "SoyGeneralOptions.isStrictAutoescapingRequired(false) is not supported with this"
+              + " method");
+    }
+    // otherwise, it was already explicitly set to true which is what we want.
   }
 
   /**
@@ -935,31 +977,14 @@ public final class SoyFileSet {
   @SuppressWarnings("deprecation")
   public List<String> compileToJsSrc(
       SoyJsSrcOptions jsSrcOptions, @Nullable SoyMsgBundle msgBundle) {
-    resetErrorReporter();
-
-    // Synchronize old and new ways to declare syntax version V1.
-    if (jsSrcOptions.shouldAllowDeprecatedSyntax()) {
-      generalOptions.setDeclaredSyntaxVersionName("1.0");
-    }
-    // JS has traditionally allowed unknown globals, as a way for soy to reference normal js enums
-    // and constants.  For consistency/reusability of templates it would be nice to not allow that
-    // but the cat is out of the bag.
-    ParseResult parseResult =
-        parse(
-            SyntaxVersion.V2_0,
-            true /* allow unknown globals */,
-            false /* allow unknown functions */,
-            typeRegistry,
-            soyFunctionMap);
+    ParseResult result = preprocessJsSrcResults(jsSrcOptions);
+    TemplateRegistry registry = result.registry();
+    SoyFileSetNode fileSet = result.fileSet();
+    List<String> generatedSrcs =
+        new JsSrcMain(apiCallScopeProvider, typeRegistry)
+            .genJsSrc(fileSet, registry, jsSrcOptions, msgBundle, errorReporter);
     throwIfErrorsPresent();
-    TemplateRegistry registry = parseResult.registry();
-    SoyFileSetNode fileSet = parseResult.fileSet();
-    registry = runMiddleendPasses(registry, fileSet);
-    throwIfErrorsPresent();
-    List<String> generatedSrcs = jsSrcMainProvider
-        .get()
-        .genJsSrc(fileSet, registry, jsSrcOptions, msgBundle, errorReporter);
-    throwIfErrorsPresent();
+    reportWarnings();
     return generatedSrcs;
   }
 
@@ -971,6 +996,7 @@ public final class SoyFileSet {
    * @param inputFilePathPrefix The prefix prepended to all input file paths (can be empty string).
    * @param jsSrcOptions The compilation options for the JS Src output target.
    * @param locales The list of locales. Can be an empty list if not applicable.
+   * @param msgPlugin The {@link SoyMsgPlugin} to use, or null if not applicable
    * @param messageFilePathFormat The message file path format, or null if not applicable.
    * @throws SoyCompilationException If compilation fails.
    * @throws IOException If there is an error in opening/reading a message file or opening/writing
@@ -982,33 +1008,16 @@ public final class SoyFileSet {
       String inputFilePathPrefix,
       SoyJsSrcOptions jsSrcOptions,
       List<String> locales,
+      @Nullable SoyMsgPlugin msgPlugin,
       @Nullable String messageFilePathFormat)
       throws IOException {
-    resetErrorReporter();
-
-    // Synchronize old and new ways to declare syntax version V1.
-    if (jsSrcOptions.shouldAllowDeprecatedSyntax()) {
-      generalOptions.setDeclaredSyntaxVersionName("1.0");
-    }
-
-    // Allow unknown globals for backwards compatibility
-    ParseResult result =
-        parse(
-            SyntaxVersion.V2_0,
-            true /* allow unknown globals */,
-            false /* allow unknown functions */,
-            typeRegistry,
-            soyFunctionMap);
-    throwIfErrorsPresent();
+    ParseResult result = preprocessJsSrcResults(jsSrcOptions);
 
     SoyFileSetNode soyTree = result.fileSet();
     TemplateRegistry registry = result.registry();
-    registry = runMiddleendPasses(registry, soyTree);
-    throwIfErrorsPresent();
     if (locales.isEmpty()) {
       // Not generating localized JS.
-      jsSrcMainProvider
-          .get()
+      new JsSrcMain(apiCallScopeProvider, typeRegistry)
           .genJsFiles(
               soyTree,
               registry,
@@ -1020,16 +1029,22 @@ public final class SoyFileSet {
               errorReporter);
 
     } else {
+      checkArgument(
+          msgPlugin != null, "a message plugin must be provided when generating localized sources");
+      checkArgument(
+          messageFilePathFormat != null,
+          "a messageFilePathFormat must be provided when generating localized sources");
       // Generating localized JS.
       for (String locale : locales) {
 
-        SoyFileSetNode soyTreeClone = SoytreeUtils.cloneNode(soyTree);
+        SoyFileSetNode soyTreeClone = soyTree.copy(new CopyState());
 
-        String msgFilePath = MainEntryPointUtils.buildFilePath(
-            messageFilePathFormat, locale, null, inputFilePathPrefix);
+        String msgFilePath =
+            MainEntryPointUtils.buildFilePath(
+                messageFilePathFormat, locale, null, inputFilePathPrefix);
 
         SoyMsgBundle msgBundle =
-            msgBundleHandlerProvider.get().createFromFile(new File(msgFilePath));
+            new SoyMsgBundleHandler(msgPlugin).createFromFile(new File(msgFilePath));
         if (msgBundle.getLocaleString() == null) {
           // TODO: Remove this check (but make sure no projects depend on this behavior).
           // There was an error reading the message file. We continue processing only if the locale
@@ -1039,8 +1054,7 @@ public final class SoyFileSet {
           }
         }
 
-        jsSrcMainProvider
-            .get()
+        new JsSrcMain(apiCallScopeProvider, typeRegistry)
             .genJsFiles(
                 soyTreeClone,
                 registry,
@@ -1053,6 +1067,25 @@ public final class SoyFileSet {
       }
     }
     throwIfErrorsPresent();
+    reportWarnings();
+  }
+
+  @SuppressWarnings("deprecation")
+  private ParseResult preprocessJsSrcResults(SoyJsSrcOptions jsSrcOptions) {
+    resetErrorReporter();
+
+    // Synchronize old and new ways to declare syntax version V1.
+    if (jsSrcOptions.shouldAllowDeprecatedSyntax()) {
+      generalOptions.setDeclaredSyntaxVersionName("1.0");
+    }
+    // JS has traditionally allowed unknown globals, as a way for soy to reference normal js enums
+    // and constants. For consistency/reusability of templates it would be nice to not allow that
+    // but the cat is out of the bag.
+    PassManager.Builder builder =
+        passManagerBuilder(SyntaxVersion.V2_0).allowUnknownGlobals().desugarHtmlNodes(false);
+    ParseResult parseResult = parse(builder);
+    throwIfErrorsPresent();
+    return parseResult;
   }
 
   /**
@@ -1064,17 +1097,16 @@ public final class SoyFileSet {
    *     JS file. The generated JS files correspond one-to-one to the original Soy source files.
    * @throws SoyCompilationException If compilation fails.
    */
-  public List<String> compileToIncrementalDomSrc(SoyJsSrcOptions jsSrcOptions)
-      throws IOException {
+  public List<String> compileToIncrementalDomSrc(SoyIncrementalDomSrcOptions jsSrcOptions) {
     resetErrorReporter();
     ParseResult result = preprocessIncrementalDOMResults();
-    List<String> generatedSrcs = incrementalDomSrcMainProvider
-        .get()
-        .genJsSrc(result.fileSet(), result.registry(), jsSrcOptions, errorReporter);
+    List<String> generatedSrcs =
+        new IncrementalDomSrcMain(apiCallScopeProvider, typeRegistry)
+            .genJsSrc(result.fileSet(), result.registry(), jsSrcOptions, errorReporter);
     throwIfErrorsPresent();
+    reportWarnings();
     return generatedSrcs;
   }
-
 
   /**
    * Compiles this Soy file set into JS source code files and writes these JS files to disk.
@@ -1086,22 +1118,21 @@ public final class SoyFileSet {
    * @throws IOException If there is an error in opening/reading a message file or opening/writing
    *     an output JS file.
    */
-  void compileToIncrementalDomSrcFiles(String outputPathFormat, SoyJsSrcOptions jsSrcOptions)
-      throws IOException {
+  void compileToIncrementalDomSrcFiles(
+      String outputPathFormat, SoyIncrementalDomSrcOptions jsSrcOptions) throws IOException {
     resetErrorReporter();
+    disallowExternalCalls();
     ParseResult result = preprocessIncrementalDOMResults();
 
-    incrementalDomSrcMainProvider
-        .get()
-        .genJsFiles(result.fileSet(), result.registry(), jsSrcOptions, outputPathFormat,
-        errorReporter);
+    new IncrementalDomSrcMain(apiCallScopeProvider, typeRegistry)
+        .genJsFiles(
+            result.fileSet(), result.registry(), jsSrcOptions, outputPathFormat, errorReporter);
 
     throwIfErrorsPresent();
+    reportWarnings();
   }
 
-  /**
-   * Prepares the parsed result for use in generating Incremental DOM source code.
-   */
+  /** Prepares the parsed result for use in generating Incremental DOM source code. */
   @SuppressWarnings("deprecation")
   private ParseResult preprocessIncrementalDOMResults() {
     SyntaxVersion declaredSyntaxVersion =
@@ -1110,21 +1141,15 @@ public final class SoyFileSet {
     Preconditions.checkState(
         declaredSyntaxVersion.num >= SyntaxVersion.V2_0.num,
         "Incremental DOM code generation only supports syntax version of V2 or higher.");
-
-    ParseResult result = parse(SyntaxVersion.V2_0);
-
-    throwIfErrorsPresent();
-    SoyFileSetNode soyTree = result.fileSet();
-    new ChangeCallsToPassAllDataVisitor().exec(soyTree);
-    simplifyVisitor.simplify(soyTree, result.registry());
-
+    requireStrictAutoescaping();
+    // For incremental dom backend, we don't desugar HTML nodes since it requires HTML context.
+    ParseResult result = parse(passManagerBuilder(SyntaxVersion.V2_0).desugarHtmlNodes(false));
     throwIfErrorsPresent();
     return result;
   }
 
   /**
-   * Compiles this Soy file set into Python source code files and writes these Python files to
-   * disk.
+   * Compiles this Soy file set into Python source code files and writes these Python files to disk.
    *
    * @param outputPathFormat The format string defining how to build the output file path
    *     corresponding to an input file path.
@@ -1134,162 +1159,107 @@ public final class SoyFileSet {
    * @throws IOException If there is an error in opening/reading a message file or opening/writing
    *     an output JS file.
    */
-  public void compileToPySrcFiles(
+  void compileToPySrcFiles(
       String outputPathFormat, String inputFilePathPrefix, SoyPySrcOptions pySrcOptions)
       throws IOException {
     resetErrorReporter();
-
+    requireStrictAutoescaping();
     ParseResult result = parse(SyntaxVersion.V2_0);
     throwIfErrorsPresent();
-    SoyFileSetNode soyTree = result.fileSet();
-
-    TemplateRegistry registry = result.registry();
-    registry = runMiddleendPasses(registry, result.fileSet());
-    throwIfErrorsPresent();
-
-    pySrcMainProvider
-        .get()
+    new PySrcMain(apiCallScopeProvider)
         .genPyFiles(
-            soyTree, registry, pySrcOptions, outputPathFormat, inputFilePathPrefix, errorReporter);
+            result.fileSet(), pySrcOptions, outputPathFormat, inputFilePathPrefix, errorReporter);
 
     throwIfErrorsPresent();
+    reportWarnings();
   }
 
   // Parse the current file set with the given default syntax version.
   private ParseResult parse(SyntaxVersion defaultVersion) {
-    return parse(
-        defaultVersion,
-        false /* allow unknown globals */,
-        false /* allow unknown functions */,
-        typeRegistry,
-        soyFunctionMap);
+    return parse(passManagerBuilder(defaultVersion));
   }
 
-  /**
-   * A parse method that allows disabling certain features.  All callers should prefer the
-   * {@link #parse(SyntaxVersion)} overload whenever possible.
-   *
-   * @param defaultVersion The default declared syntax version
-   * @param allowUknownGlobals Whether to allow unknown globals
-   * @param typeRegistry The type registry to use
-   * @param soyFunctionMap The map of Soy functions to use
-   */
+  private ParseResult parse(PassManager.Builder builder) {
+    return parse(
+        builder,
+        typeRegistry,
+        new PluginResolver(
+            generalOptions.getDeclaredSyntaxVersion(SyntaxVersion.V2_0) == SyntaxVersion.V1_0
+                ? PluginResolver.Mode.ALLOW_UNDEFINED_FUNCTIONS_FOR_V1_SUPPORT
+                : PluginResolver.Mode.REQUIRE_DEFINITIONS,
+            printDirectives,
+            soyFunctionMap,
+            errorReporter));
+  }
+
   private ParseResult parse(
-      SyntaxVersion defaultVersion,
-      boolean allowUknownGlobals,
-      boolean allowUknownFunctions,
-      SoyTypeRegistry typeRegistry,
-      ImmutableMap<String, ? extends SoyFunction> soyFunctionMap) {
-    SyntaxVersion declaredSyntaxVersion = generalOptions.getDeclaredSyntaxVersion(defaultVersion);
-    PassManager.Builder builder =
-        new PassManager.Builder()
-            .setTypeRegistry(typeRegistry)
-            .setGeneralOptions(generalOptions)
-            .setDeclaredSyntaxVersion(declaredSyntaxVersion)
-            .setSoyFunctionMap(soyFunctionMap)
-            .setErrorReporter(errorReporter);
-    if (allowUknownGlobals) {
-      builder.allowUnknownGlobals();
-    }
-    if (allowUknownFunctions) {
-      builder.allowUnknownFunctions();
-    }
-    return new SoyFileSetParser(
-            typeRegistry,
-            cache,
-            soyFileSuppliers,
-            builder.build(),
-            errorReporter)
+      PassManager.Builder builder, SoyTypeRegistry typeRegistry, PluginResolver resolver) {
+    return SoyFileSetParser.newBuilder()
+        .setCache(cache)
+        .setSoyFileSuppliers(soyFileSuppliers)
+        .setTypeRegistry(typeRegistry)
+        .setPluginResolver(resolver)
+        .setPassManager(builder.setTypeRegistry(typeRegistry).build())
+        .setErrorReporter(errorReporter)
+        .setGeneralOptions(generalOptions)
+        .build()
         .parse();
   }
 
-  // TODO(gboyer): There are several fields on this class that end up saving around some state, and
-  // thus are not safe to be used by multiple threads at once. Here, we add synchronized as a
-  // stop-gap. However, given that most users of SoyFileSet use it once and throw it away, that
-  // might be a better precondition.
-  /**
-   * Runs middleend passes on the given Soy tree.
-   *
-   * @param soyTree The Soy tree to run middleend passes on.
-   * @return A new TemplateRegistry.  The contextual autoescaper occasionally adds new templates and
-   *     so the TemplateRegistry needs to be recreated.
-   */
-  @CheckReturnValue
-  private synchronized TemplateRegistry runMiddleendPasses(
-      TemplateRegistry registry, SoyFileSetNode soyTree) {
-
-    // Run contextual escaping after CSS and substitutions have been done.
-    doContextualEscaping(soyTree, registry);
-    // Further passes that rely on sliced raw text nodes, such as conformance and CSP, can't
-    // proceed if contextual escaping failed.
-    throwIfErrorsPresent();
-
-    // contextual autoescaping may actually add new templates to the tree so we need to reconstruct
-    // the registry
-    registry = new TemplateRegistry(soyTree, errorReporter);
-    if (checkConformance != null) {
-      checkConformance.check(
-          ConformanceInput.create(soyTree, contextualAutoescaper.getSlicedRawTextNodes()),
-          errorReporter);
-    }
-    // Add print directives that mark inline-scripts as safe to run.
-    ContentSecurityPolicyPass.blessAuthorSpecifiedScripts(
-        contextualAutoescaper.getSlicedRawTextNodes());
-
-    // Attempt to simplify the tree.
-    new ChangeCallsToPassAllDataVisitor().exec(soyTree);
-    simplifyVisitor.simplify(soyTree, registry);
-    return registry;
-  }
-
-
-  private void doContextualEscaping(SoyFileSetNode soyTree, TemplateRegistry registry) {
-    List<TemplateNode> extraTemplates =
-        contextualAutoescaper.rewrite(soyTree, registry, errorReporter);
-    // TODO: Run the redundant template remover here and rename after CL 16642341 is in.
-    if (!extraTemplates.isEmpty()) {
-      // TODO: pull out somewhere else.  Ideally do the merge as part of the redundant template
-      // removal.
-      Map<String, SoyFileNode> containingFile = Maps.newHashMap();
-      for (SoyFileNode fileNode : soyTree.getChildren()) {
-        for (TemplateNode templateNode : fileNode.getChildren()) {
-          String name =
-              templateNode instanceof TemplateDelegateNode
-                  ? ((TemplateDelegateNode) templateNode).getDelTemplateName()
-                  : templateNode.getTemplateName();
-          containingFile.put(DerivedTemplateUtils.getBaseName(name), fileNode);
-        }
-      }
-      for (TemplateNode extraTemplate : extraTemplates) {
-        String name =
-            extraTemplate instanceof TemplateDelegateNode
-                ? ((TemplateDelegateNode) extraTemplate).getDelTemplateName()
-                : extraTemplate.getTemplateName();
-        containingFile.get(DerivedTemplateUtils.getBaseName(name)).addChild(extraTemplate);
-      }
-    }
+  private PassManager.Builder passManagerBuilder(SyntaxVersion defaultVersion) {
+    return new PassManager.Builder()
+        .setGeneralOptions(generalOptions)
+        .setDeclaredSyntaxVersion(generalOptions.getDeclaredSyntaxVersion(defaultVersion))
+        .setSoyPrintDirectiveMap(printDirectives)
+        .setErrorReporter(errorReporter)
+        .setConformanceConfig(conformanceConfig)
+        .setLoggingConfig(loggingConfig);
   }
 
   /**
    * This method resets the error reporter field in preparation to a new compiler invocation.
    *
    * <p>This method should be called at the beginning of every entry point into SoyFileSet.
-   * <p>TODO(lukes): instead of resetting, consider making it an error to call a compiler method
-   * on the same SoyFileSet object more than once.
    */
   private void resetErrorReporter() {
-    // TODO(lukes): consider moving ErrorReporterImpl to the error package and making this a static
-    // factory method there somewhere
-    errorReporter =
-        new ErrorReporterImpl(new PrettyErrorFactory(new SnippetFormatter(soyFileSuppliers)));
+    errorReporter = ErrorReporter.create(soyFileSuppliers);
   }
 
   private void throwIfErrorsPresent() {
     if (errorReporter.hasErrors()) {
-      Iterable<SoyError> errors = errorReporter.getErrors();
+      // if we are reporting errors we should report warnings at the same time.
+      Iterable<SoyError> errors =
+          Iterables.concat(errorReporter.getErrors(), errorReporter.getWarnings());
       // clear the field to ensure that error reporters can't leak between compilations
       errorReporter = null;
       throw new SoyCompilationException(errors);
+    }
+  }
+
+  /**
+   * Reports warnings ot the user configured warning sink. Should be called at the end of successful
+   * compiles.
+   */
+  private void reportWarnings() {
+    ImmutableList<SoyError> warnings = errorReporter.getWarnings();
+    if (warnings.isEmpty()) {
+      return;
+    }
+    // this is a custom feature used by the integration test suite.
+    if (generalOptions.getExperimentalFeatures().contains("testonly_throw_on_warnings")) {
+      errorReporter = null;
+      throw new SoyCompilationException(warnings);
+    }
+    String formatted = SoyErrors.formatErrors(warnings);
+    if (warningSink != null) {
+      try {
+        warningSink.append(formatted);
+      } catch (IOException ioe) {
+        System.err.println("error while printing warnings");
+        ioe.printStackTrace();
+      }
+    } else {
+      logger.warning(formatted);
     }
   }
 }

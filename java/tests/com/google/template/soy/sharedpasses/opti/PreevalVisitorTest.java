@@ -16,36 +16,39 @@
 
 package com.google.template.soy.sharedpasses.opti;
 
-import com.google.inject.Guice;
-import com.google.inject.Injector;
+import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.fail;
+
+import com.google.common.collect.ImmutableMap;
 import com.google.template.soy.SoyFileSetParserBuilder;
-import com.google.template.soy.SoyModule;
 import com.google.template.soy.data.SoyValue;
-import com.google.template.soy.data.SoyValueHelper;
+import com.google.template.soy.data.SoyValueConverterUtility;
 import com.google.template.soy.data.SoyValueProvider;
 import com.google.template.soy.exprtree.ExprRootNode;
+import com.google.template.soy.sharedpasses.render.Environment;
 import com.google.template.soy.sharedpasses.render.RenderException;
 import com.google.template.soy.sharedpasses.render.TestingEnvironment;
 import com.google.template.soy.soytree.PrintNode;
-
-import junit.framework.TestCase;
-
-import java.util.HashMap;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.JUnit4;
 
 /**
  * Unit tests for PreevalVisitor.
  *
  */
-public final class PreevalVisitorTest extends TestCase {
+@RunWith(JUnit4.class)
+public final class PreevalVisitorTest {
 
+  @Test
   public void testPreevalNoData() {
 
-    assertEquals(-210, preeval("-99+-111").integerValue());
-    assertEquals("-99-111", preeval("-99 + '-111'").stringValue());
-    assertEquals(false, preeval("false or 0 or 0.0 or ''").booleanValue());
-    assertEquals(true, preeval("0 <= 0").booleanValue());
-    assertEquals(true, preeval("'22' == 22").booleanValue());
-    assertEquals(true, preeval("'22' == '' + 22").booleanValue());
+    assertThat(preeval("-99+-111").integerValue()).isEqualTo(-210);
+    assertThat(preeval("-99 + '-111'").stringValue()).isEqualTo("-99-111");
+    assertThat(preeval("false or 0 or 0.0 or ''").booleanValue()).isFalse();
+    assertThat(preeval("0 <= 0").booleanValue()).isTrue();
+    assertThat(preeval("'22' == 22").booleanValue()).isTrue();
+    assertThat(preeval("'22' == '' + 22").booleanValue()).isTrue();
 
     // With functions.
     // TODO SOON: Uncomment these tests when basic functions have been changed to SoyJavaFunction.
@@ -57,17 +60,17 @@ public final class PreevalVisitorTest extends TestCase {
       preeval("randomInt(1000)");
       fail();
     } catch (RenderException re) {
-      assertTrue(re.getMessage().equals("Cannot preevaluate impure function."));
+      assertThat(re).hasMessageThat().isEqualTo("Cannot preevaluate impure function.");
     }
   }
 
-
+  @Test
   public void testPreevalWithData() {
 
-    assertEquals(8, preeval("$boo", "boo").integerValue());
-    assertEquals(2, preeval("$boo % 3", "boo").integerValue());
-    assertEquals(2, preeval("not $boo ? 1 : 2", "boo").integerValue());
-    assertEquals("8", preeval("$boo + ''", "boo").stringValue());
+    assertThat(preeval("$boo", "boo").integerValue()).isEqualTo(8);
+    assertThat(preeval("$boo % 3", "boo").integerValue()).isEqualTo(2);
+    assertThat(preeval("not $boo ? 1 : 2", "boo").integerValue()).isEqualTo(2);
+    assertThat(preeval("$boo + ''", "boo").stringValue()).isEqualTo("8");
 
     // With functions.
     // TODO SOON: Uncomment these tests when basic functions have been changed to SoyJavaFunction.
@@ -84,7 +87,7 @@ public final class PreevalVisitorTest extends TestCase {
     }
   }
 
-
+  @Test
   public void testPreevalWithIjData() {
 
     try {
@@ -95,14 +98,12 @@ public final class PreevalVisitorTest extends TestCase {
     }
   }
 
-
   // -----------------------------------------------------------------------------------------------
   // Helpers.
 
-  private static final Injector INJECTOR = Guice.createInjector(new SoyModule());
-
   /**
    * Evaluates the given expression and returns the result.
+   *
    * @param expression The expression to preevaluate.
    * @return The expression result.
    */
@@ -119,14 +120,12 @@ public final class PreevalVisitorTest extends TestCase {
                 .getChild(0)
                 .getChild(0)
                 .getChild(0);
-    ExprRootNode expr = code.getExprUnion().getExpr();
-    PreevalVisitor preevalVisitor =
-        INJECTOR.getInstance(PreevalVisitorFactory.class).create(
-            null,
-            TestingEnvironment.createForTest(
-                SoyValueHelper.UNCUSTOMIZED_INSTANCE.newEasyDict("boo", 8),
-                new HashMap<String, SoyValueProvider>()));
-    return preevalVisitor.exec(expr);
-  }
+    ExprRootNode expr = code.getExpr();
+    Environment env =
+        TestingEnvironment.createForTest(
+            SoyValueConverterUtility.newDict("boo", 8),
+            ImmutableMap.<String, SoyValueProvider>of());
 
+    return new PreevalVisitor(env).exec(expr);
+  }
 }

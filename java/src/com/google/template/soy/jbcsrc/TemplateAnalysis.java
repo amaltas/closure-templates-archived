@@ -20,11 +20,11 @@ import static com.google.common.base.Preconditions.checkState;
 
 import com.google.common.base.Equivalence;
 import com.google.common.base.Equivalence.Wrapper;
+import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
 import com.google.template.soy.basetree.CopyState;
-import com.google.template.soy.data.SoyValueProvider;
 import com.google.template.soy.exprtree.AbstractExprNodeVisitor;
 import com.google.template.soy.exprtree.DataAccessNode;
 import com.google.template.soy.exprtree.ExprEquivalence;
@@ -33,8 +33,9 @@ import com.google.template.soy.exprtree.ExprNode.OperatorNode;
 import com.google.template.soy.exprtree.ExprNode.PrimitiveNode;
 import com.google.template.soy.exprtree.ExprRootNode;
 import com.google.template.soy.exprtree.FunctionNode;
+import com.google.template.soy.exprtree.IntegerNode;
+import com.google.template.soy.exprtree.LegacyObjectMapLiteralNode;
 import com.google.template.soy.exprtree.ListLiteralNode;
-import com.google.template.soy.exprtree.MapLiteralNode;
 import com.google.template.soy.exprtree.OperatorNodes.AndOpNode;
 import com.google.template.soy.exprtree.OperatorNodes.ConditionalOpNode;
 import com.google.template.soy.exprtree.OperatorNodes.NullCoalescingOpNode;
@@ -42,6 +43,7 @@ import com.google.template.soy.exprtree.OperatorNodes.OrOpNode;
 import com.google.template.soy.exprtree.VarDefn;
 import com.google.template.soy.exprtree.VarRefNode;
 import com.google.template.soy.jbcsrc.api.RenderResult;
+import com.google.template.soy.jbcsrc.runtime.JbcSrcRuntime;
 import com.google.template.soy.msgs.internal.MsgUtils;
 import com.google.template.soy.msgs.restricted.SoyMsgPart;
 import com.google.template.soy.msgs.restricted.SoyMsgPart.Case;
@@ -51,20 +53,17 @@ import com.google.template.soy.msgs.restricted.SoyMsgPluralPart;
 import com.google.template.soy.msgs.restricted.SoyMsgPluralRemainderPart;
 import com.google.template.soy.msgs.restricted.SoyMsgRawTextPart;
 import com.google.template.soy.msgs.restricted.SoyMsgSelectPart;
+import com.google.template.soy.shared.RangeArgs;
 import com.google.template.soy.shared.internal.BuiltinFunction;
 import com.google.template.soy.soytree.AbstractSoyNodeVisitor;
 import com.google.template.soy.soytree.CallNode;
 import com.google.template.soy.soytree.CallParamContentNode;
 import com.google.template.soy.soytree.CallParamNode;
 import com.google.template.soy.soytree.CallParamValueNode;
-import com.google.template.soy.soytree.CssNode;
 import com.google.template.soy.soytree.DebuggerNode;
-import com.google.template.soy.soytree.ExprUnion;
+import com.google.template.soy.soytree.ForIfemptyNode;
 import com.google.template.soy.soytree.ForNode;
-import com.google.template.soy.soytree.ForNode.RangeArgs;
-import com.google.template.soy.soytree.ForeachIfemptyNode;
-import com.google.template.soy.soytree.ForeachNode;
-import com.google.template.soy.soytree.ForeachNonemptyNode;
+import com.google.template.soy.soytree.ForNonemptyNode;
 import com.google.template.soy.soytree.IfCondNode;
 import com.google.template.soy.soytree.IfElseNode;
 import com.google.template.soy.soytree.IfNode;
@@ -79,14 +78,13 @@ import com.google.template.soy.soytree.PrintDirectiveNode;
 import com.google.template.soy.soytree.PrintNode;
 import com.google.template.soy.soytree.RawTextNode;
 import com.google.template.soy.soytree.SoyNode;
+import com.google.template.soy.soytree.SoyNode.BlockNode;
 import com.google.template.soy.soytree.SoyNode.ParentSoyNode;
 import com.google.template.soy.soytree.SoyNode.StandaloneNode;
 import com.google.template.soy.soytree.SwitchCaseNode;
 import com.google.template.soy.soytree.SwitchDefaultNode;
 import com.google.template.soy.soytree.SwitchNode;
 import com.google.template.soy.soytree.TemplateNode;
-import com.google.template.soy.soytree.XidNode;
-
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -102,23 +100,25 @@ import java.util.Set;
  * A static analyzer for how templates will access variables.
  *
  * <p>This class contains a generic method for constructing a control flow graph through a given Soy
- * template.  We then use this graph to answer questions about the template. 
- * 
+ * template. We then use this graph to answer questions about the template.
+ *
  * <p>Supported queries
+ *
  * <ul>
- *     <li>{@link #isResolved(DataAccessNode)} can tell us whether or not a particular
- *         variable or field reference has already been referenced at a given point and therefore
- *         {@link SoyValueProvider#status()} has already returned {@link RenderResult#done()}.
+ *   <li>{@link #isResolved(DataAccessNode)} can tell us whether or not a particular variable or
+ *       field reference has already been referenced at a given point and therefore {code
+ *       SoyValueProvider#status()} has already returned {@link RenderResult#done()}.
  * </ul>
- * 
+ *
  * <p>TODO(lukes): consider adding the following
+ *
  * <ul>
- *     <li>Identify the last use of a variable.  Currently we use variable scopes to decide when to
- *         stop saving/restoring variables, but if we knew they were no longer in use we could save
- *         generating save/restore logic.
- *     <li>Identify the last render of a variable.  We could use this to save temporary buffers.
- *     <li>Identify the first use of a variable.  We could use this to move {let...} definitions 
- *         closer to their uses.
+ *   <li>Identify the last use of a variable. Currently we use variable scopes to decide when to
+ *       stop saving/restoring variables, but if we knew they were no longer in use we could save
+ *       generating save/restore logic.
+ *   <li>Identify the last render of a variable. We could use this to save temporary buffers.
+ *   <li>Identify the first use of a variable. We could use this to move {let...} definitions closer
+ *       to their uses.
  * </ul>
  */
 final class TemplateAnalysis {
@@ -150,7 +150,7 @@ final class TemplateAnalysis {
   }
 
   /**
-   * This visitor (and the {@link PseudoEvaluatorExprVisitor}) visit every Soy node in the order
+   * This visitor (and the {@link PseudoEvaluatorExprVisitor}) visits every Soy node in the order
    * that the code generated from those node would execute and contructs an {@link AccessGraph}.
    */
   private static final class PseudoEvaluatorVisitor extends AbstractSoyNodeVisitor<Void> {
@@ -187,7 +187,7 @@ final class TemplateAnalysis {
 
     @Override
     protected void visitPrintNode(PrintNode node) {
-      evalInline(node.getExprUnion());
+      evalInline(node.getExpr());
       for (PrintDirectiveNode directive : node.getChildren()) {
         for (ExprRootNode arg : directive.getArgs()) {
           evalInline(arg);
@@ -216,7 +216,7 @@ final class TemplateAnalysis {
     }
 
     @Override
-    protected void visitForeachNode(ForeachNode node) {
+    protected void visitForNode(ForNode node) {
       // the list is always evaluated first.
       evalInline(node.getExpr());
 
@@ -225,7 +225,7 @@ final class TemplateAnalysis {
       Block loopBody = loopBegin.addBranch();
       Block loopEnd = exec(loopBody, node.getChild(0));
       // If we can statically prove the list empty, use that information.
-      StaticAnalysisResult isLoopEmpty = isListExpressionEmpty(node.getExpr());
+      StaticAnalysisResult isLoopEmpty = isListExpressionEmpty(node);
       if (node.numChildren() == 2) { // there is an {ifempty} block
         Block ifEmptyBlock = loopBegin.addBranch();
         Block ifEmptyEnd = exec(ifEmptyBlock, node.getChild(1));
@@ -260,41 +260,13 @@ final class TemplateAnalysis {
     }
 
     @Override
-    protected void visitForeachIfemptyNode(ForeachIfemptyNode node) {
+    protected void visitForIfemptyNode(ForIfemptyNode node) {
       visitChildren(node);
     }
 
     @Override
-    protected void visitForeachNonemptyNode(ForeachNonemptyNode node) {
+    protected void visitForNonemptyNode(ForNonemptyNode node) {
       visitChildren(node);
-    }
-
-    @Override
-    protected void visitForNode(ForNode node) {
-      // The range(...) args of a For node are always evaluated first, in this order.
-      // (see SoyNodeCompiler)
-      RangeArgs rangeArgs = node.getRangeArgs();
-      if (rangeArgs.start().isPresent()) {
-        evalInline(rangeArgs.start().get());
-      }
-      if (rangeArgs.increment().isPresent()) {
-        evalInline(rangeArgs.increment().get());
-      }
-      evalInline(rangeArgs.limit());
-      Block loopBegin = this.current;
-      // create a branch for the loop body
-      Block loopBody = loopBegin.addBranch();
-      Block loopEnd = loopBody;
-      for (StandaloneNode child : node.getChildren()) {
-        loopEnd = exec(loopEnd, child);
-      }
-      // If the loop definitely executed we could merge results back up.  There are actually a
-      // surprising number of people using constants in their range args.
-      if (rangeArgs.definitelyNotEmpty()) {
-        this.current = loopEnd;
-      } else {
-        this.current = Block.merge(loopBegin, loopEnd);
-      }
     }
 
     @Override
@@ -314,7 +286,7 @@ final class TemplateAnalysis {
     protected void visitLetValueNode(LetValueNode node) {
       // see visitLetContentNode
       Block start = new Block();
-      Block end = exprVisitor.eval(start, node.getValueExpr());
+      Block end = exprVisitor.eval(start, node.getExpr());
       letNodes.put(node.getVar(), new AccessGraph(start, end));
     }
 
@@ -324,12 +296,12 @@ final class TemplateAnalysis {
       // * no children => don't evaluate the switch expression
       // * no cases => don't evaluate the switch expression
 
-      List<SoyNode> children = node.getChildren();
+      List<BlockNode> children = node.getChildren();
       if (children.isEmpty()) {
         return;
       }
       if (children.size() == 1 && children.get(0) instanceof SwitchDefaultNode) {
-        visitChildren((SwitchDefaultNode) children.get(0));
+        visitChildren(children.get(0));
         return;
       }
       // otherwise we are in the normal case and this is much like an if-elseif-else statement
@@ -347,14 +319,14 @@ final class TemplateAnalysis {
           Block caseBlockEnd = exec(caseBlockStart, scn);
           branchEnds.add(caseBlockEnd);
 
-          for (ExprUnion expr : scn.getAllExprUnions()) {
+          for (ExprRootNode expr : scn.getExprList()) {
             if (conditions == null) {
               evalInline(expr); // the very first condition is always evaluated
               conditions = this.current;
             } else {
               // otherwise we are only maybe evaluating this condition
               Block condition = conditions.addBranch();
-              conditions = exprVisitor.eval(condition, expr.getExpr());
+              conditions = exprVisitor.eval(condition, expr);
             }
             conditions.successors.add(caseBlockStart);
           }
@@ -399,7 +371,7 @@ final class TemplateAnalysis {
       for (SoyNode child : node.getChildren()) {
         if (child instanceof IfCondNode) {
           IfCondNode icn = (IfCondNode) child;
-          ExprRootNode conditionExpression = icn.getExprUnion().getExpr();
+          ExprRootNode conditionExpression = icn.getExpr();
           if (conditionFork == null) {
             // first condition is always evaluated
             evalInline(conditionExpression);
@@ -435,21 +407,9 @@ final class TemplateAnalysis {
     }
 
     @Override
-    protected void visitCssNode(CssNode node) {
-      if (node.getComponentNameExpr() != null) {
-        evalInline(node.getComponentNameExpr());
-      }
-    }
-
-    @Override
-    protected void visitXidNode(XidNode node) {
-      // do nothing, xids only contain constants.
-    }
-
-    @Override
     protected void visitCallNode(CallNode node) {
       // If there is a data="<expr>" this is always evaluated first.
-      ExprRootNode dataExpr = node.dataAttribute().dataExpr();
+      ExprRootNode dataExpr = node.getDataExpr();
       if (dataExpr != null) {
         evalInline(dataExpr);
       }
@@ -475,7 +435,7 @@ final class TemplateAnalysis {
     @Override
     protected void visitCallParamValueNode(CallParamValueNode node) {
       // params are evaluated in their own fork.
-      evalInline(node.getValueExprUnion());
+      evalInline(node.getExpr());
     }
 
     @Override
@@ -563,12 +523,7 @@ final class TemplateAnalysis {
       super.visitChildren(node);
     }
 
-    /** Evaluates the given expression in the current block.*/
-    void evalInline(ExprUnion expr) {
-      evalInline(expr.getExpr());
-    }
-
-    /** Evaluates the given expression in the current block.*/
+    /** Evaluates the given expression in the current block. */
     void evalInline(ExprNode expr) {
       Block begin = current;
       Block end = exprVisitor.eval(begin, expr);
@@ -582,14 +537,62 @@ final class TemplateAnalysis {
     UNKNOWN;
   }
 
-  private static StaticAnalysisResult isListExpressionEmpty(ExprNode node) {
-    node = node instanceof ExprRootNode ? ((ExprRootNode) node).getRoot() : node;
-    if (node instanceof ListLiteralNode) {
-      return ((ListLiteralNode) node).numChildren() > 0
+  // consider moving this to SoyTreeUtils or some similar place.
+  private static StaticAnalysisResult isListExpressionEmpty(ForNode node) {
+    Optional<RangeArgs> rangeArgs = RangeArgs.createFromNode(node);
+    if (rangeArgs.isPresent()) {
+      return isRangeExpressionEmpty(rangeArgs.get());
+    }
+    ExprNode expr = node.getExpr().getRoot();
+    if (expr instanceof ListLiteralNode) {
+      return ((ListLiteralNode) expr).numChildren() > 0
           ? StaticAnalysisResult.FALSE
           : StaticAnalysisResult.TRUE;
     }
     return StaticAnalysisResult.UNKNOWN;
+  }
+
+  private static StaticAnalysisResult isRangeExpressionEmpty(RangeArgs range) {
+    int start = 0;
+    if (range.start().isPresent()) {
+      if (range.start().get() instanceof IntegerNode) {
+        long startAsLong = ((IntegerNode) range.start().get()).getValue();
+        if (startAsLong != (int) startAsLong) {
+          return StaticAnalysisResult.UNKNOWN;
+        }
+        start = (int) startAsLong;
+      } else {
+        // if the start is not a constant then we don't know anything
+        return StaticAnalysisResult.UNKNOWN;
+      }
+    }
+
+    int limit;
+    if (range.limit() instanceof IntegerNode) {
+      long limitAsLong = ((IntegerNode) range.limit()).getValue();
+      if (limitAsLong != (int) limitAsLong) {
+        return StaticAnalysisResult.UNKNOWN;
+      }
+      limit = (int) limitAsLong;
+    } else {
+      return StaticAnalysisResult.UNKNOWN;
+    }
+
+    int step = 1;
+    if (range.increment().isPresent()) {
+      if (range.increment().get() instanceof IntegerNode) {
+        long stepAsLong = ((IntegerNode) range.increment().get()).getValue();
+        if (stepAsLong != (int) stepAsLong) {
+          return StaticAnalysisResult.UNKNOWN;
+        }
+        step = (int) stepAsLong;
+      } else {
+        return StaticAnalysisResult.UNKNOWN;
+      }
+    }
+    return JbcSrcRuntime.rangeLoopLength(start, limit, step) > 0
+        ? StaticAnalysisResult.FALSE
+        : StaticAnalysisResult.TRUE;
   }
 
   private static final class PseudoEvaluatorExprVisitor extends AbstractExprNodeVisitor<Void> {
@@ -600,7 +603,7 @@ final class TemplateAnalysis {
       this.letNodes = letNodes;
     }
 
-    /** Evaluates the given expression in the given block.  Returns the ending or 'exit' block. */
+    /** Evaluates the given expression in the given block. Returns the ending or 'exit' block. */
     Block eval(Block block, ExprNode expr) {
       Block orig = this.current;
       this.current = block;
@@ -620,11 +623,11 @@ final class TemplateAnalysis {
       AccessGraph letContent = letNodes.get(node.getDefnDecl());
       if (letContent != null) {
         // because let nodes are lazily executed, we model this in the access graph as each let
-        // varref branching to a copy of the implementation and back. This ensures that each 
+        // varref branching to a copy of the implementation and back. This ensures that each
         // variable referenced by the {let} is referenced prior to the let variable.
         // Additionally we add a dead end branch from just prior the let to the canonical let
         // implementation block
-        // 
+        //
         // this means that the graph structure for this:
         // {let $foo : $p /}
         // {$foo}
@@ -664,8 +667,13 @@ final class TemplateAnalysis {
             return;
           case QUOTE_KEYS_IF_JS:
           case CHECK_NOT_NULL:
+          case CSS:
+          case XID:
             // fall through
             break;
+          case V1_EXPRESSION:
+            throw new UnsupportedOperationException(
+                "the v1Expression function can't be used in templates compiled to Java");
           default:
             throw new AssertionError("unexpected builtin function");
         }
@@ -685,7 +693,7 @@ final class TemplateAnalysis {
     }
 
     @Override
-    protected void visitMapLiteralNode(MapLiteralNode node) {
+    protected void visitLegacyObjectMapLiteralNode(LegacyObjectMapLiteralNode node) {
       visitChildren(node);
     }
 
@@ -715,9 +723,7 @@ final class TemplateAnalysis {
       executeInBranch(node.getChild(1));
     }
 
-    /**
-     * Evaluates the given node in an optional branch.
-     */
+    /** Evaluates the given node in an optional branch. */
     private void executeInBranch(ExprNode expr) {
       Block prev = current;
       Block branch = prev.addBranch();
@@ -725,7 +731,6 @@ final class TemplateAnalysis {
       // Add a successor node to merge the branches back together.
       current = Block.merge(prev, branch);
     }
-
 
     @Override
     protected void visitConditionalOpNode(ConditionalOpNode node) {
@@ -737,7 +742,7 @@ final class TemplateAnalysis {
     }
   }
 
-  /** 
+  /**
    * Traverses the control flow graph reachable from {@code start} and adds all the predecessor
    * links.
    */
@@ -755,8 +760,6 @@ final class TemplateAnalysis {
       addPredecessors(successor, visited);
     }
   }
-  
-  
 
   /**
    * A graph of {@link Block blocks} for a given template showing how control flows through the
@@ -764,11 +767,12 @@ final class TemplateAnalysis {
    *
    * <p>Note this is almost a classic Control Flow Graph
    * https://en.wikipedia.org/wiki/Control_flow_graph with the following exceptions
+   *
    * <ul>
-   *     <li>We aren't tracking 'back edges' (e.g. loops) accurately.
-   *     <li>We are tracking a small subset of the operations performed while evaluating a template.
-   *         Currently only {@link VarRefNode variable references} and {@link DataAccessNode data
-   *         access} operations.
+   *   <li>We aren't tracking 'back edges' (e.g. loops) accurately.
+   *   <li>We are tracking a small subset of the operations performed while evaluating a template.
+   *       Currently only {@link VarRefNode variable references} and {@link DataAccessNode data
+   *       access} operations.
    * </ul>
    *
    * Both of these limitations exist simply because we don't have usecases for tracking this data
@@ -890,9 +894,9 @@ final class TemplateAnalysis {
   /**
    * A block is a linear sequence of evaluations that happen with no branches.
    *
-   * <p>Each block has an arbitrary number of {@link Block#predecessors} and
-   * {@link Block#successors} representing all the blocks that come immediately prior to or after
-   * this node.
+   * <p>Each block has an arbitrary number of {@link Block#predecessors} and {@link
+   * Block#successors} representing all the blocks that come immediately prior to or after this
+   * node.
    *
    * <p>This essentially a 'basic block' https://en.wikipedia.org/wiki/Basic_block with the caveat
    * that we are tracking expressions instead of instructions.
@@ -933,7 +937,7 @@ final class TemplateAnalysis {
 
     @Override
     public String toString() {
-      return getClass().getSimpleName() 
+      return getClass().getSimpleName()
           + ImmutableMap.of(
               "exprs", exprs,
               "in_edges", predecessors.size(),

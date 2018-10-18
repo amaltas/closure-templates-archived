@@ -18,10 +18,12 @@ package com.google.template.soy.parsepasses.contextautoesc;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Sets;
-import com.google.template.soy.data.SanitizedContent.ContentKind;
-import com.google.template.soy.error.ErrorReporter;
-import com.google.template.soy.exprparse.SoyParsingContext;
+import com.google.template.soy.base.internal.SanitizedContentKind;
+import com.google.template.soy.data.SanitizedContentOperator;
+import com.google.template.soy.exprtree.ExprNode;
+import com.google.template.soy.shared.restricted.SoyPrintDirective;
 import com.google.template.soy.soytree.AbstractSoyNodeVisitor;
 import com.google.template.soy.soytree.CallBasicNode;
 import com.google.template.soy.soytree.CallDelegateNode;
@@ -35,11 +37,8 @@ import com.google.template.soy.soytree.SoyFileNode;
 import com.google.template.soy.soytree.SoyFileSetNode;
 import com.google.template.soy.soytree.SoyNode;
 import com.google.template.soy.soytree.SoyNode.ParentSoyNode;
-import com.google.template.soy.soytree.SoyNode.StandaloneNode;
 import com.google.template.soy.soytree.TemplateNode;
-
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 
 /**
@@ -52,29 +51,20 @@ final class Rewriter {
   private final Inferences inferences;
 
   /**
-   * The names of templates visited.  Used to distinguish derived templates from templates in the
+   * The names of templates visited. Used to distinguish derived templates from templates in the
    * input Soy files.
    */
   private final Set<String> visitedTemplateNames = Sets.newHashSet();
 
-  /** Maps print directive names to the content kinds they consume and produce. */
-  private final Map<String, ContentKind> sanitizedContentOperators;
-
-  /** For reporting errors. */
-  private final ErrorReporter errorReporter;
+  private final ImmutableMap<String, ? extends SoyPrintDirective> printDirectives;
 
   Rewriter(
-      Inferences inferences,
-      Map<String, ContentKind> sanitizedContentOperators,
-      ErrorReporter errorReporter) {
+      Inferences inferences, ImmutableMap<String, ? extends SoyPrintDirective> printDirectives) {
     this.inferences = inferences;
-    this.sanitizedContentOperators = sanitizedContentOperators;
-    this.errorReporter = errorReporter;
+    this.printDirectives = printDirectives;
   }
 
-  /**
-   * @return Derived templates that should be added to the parse tree.
-   */
+  /** @return Derived templates that should be added to the parse tree. */
   public List<TemplateNode> rewrite(SoyFileSetNode files) {
     RewriterVisitor mutator = new RewriterVisitor();
     // First walk the input files that the caller already knows about.
@@ -95,42 +85,42 @@ final class Rewriter {
     return extraTemplates.build();
   }
 
-
-  /**
-   * A visitor that applies the changes in Inferences to a Soy tree.
-   */
+  /** A visitor that applies the changes in Inferences to a Soy tree. */
   private final class RewriterVisitor extends AbstractSoyNodeVisitor<Void> {
-    /**
-     * Keep track of template nodes so we know which are derived and which aren't.
-     */
-    @Override protected void visitTemplateNode(TemplateNode templateNode) {
-      Preconditions.checkState(!visitedTemplateNames.contains(templateNode.getTemplateName()));
-      visitedTemplateNames.add(templateNode.getTemplateName());
-      visitChildrenAllowingConcurrentModification(templateNode);
+
+    /** Keep track of template nodes so we know which are derived and which aren't. */
+    @Override
+    protected void visitTemplateNode(TemplateNode templateNode) {
+      boolean firstTime = visitedTemplateNames.add(templateNode.getTemplateName());
+      Preconditions.checkState(firstTime, "already visited: %s", templateNode.getTemplateName());
+      visitChildren(templateNode);
     }
 
-    /**
-     * Add any escaping directives.
-     */
-    @Override protected void visitPrintNode(PrintNode printNode) {
-      int id = printNode.getId();
-      ImmutableList<EscapingMode> escapingModes = inferences.getEscapingModesForId(id);
+    /** Add any escaping directives. */
+    @Override
+    protected void visitPrintNode(PrintNode printNode) {
+      ImmutableList<EscapingMode> escapingModes = inferences.getEscapingModesForNode(printNode);
       for (EscapingMode escapingMode : escapingModes) {
-        PrintDirectiveNode newPrintDirective = new PrintDirectiveNode.Builder(
-            inferences.getIdGenerator().genId(),
-            escapingMode.directiveName,
-            "",
-            printNode.getSourceLocation())
-            .build(SoyParsingContext.exploding());
-
+        PrintDirectiveNode newPrintDirective =
+            new PrintDirectiveNode(
+                inferences.getIdGenerator().genId(),
+                printNode.getSourceLocation(),
+                ImmutableList.<ExprNode>of(),
+                printDirectives.get(escapingMode.directiveName),
+                /* isSynthetic= */ true);
         // Figure out where to put the new directive.
         // Normally they go at the end to ensure that the value printed is of the appropriate type,
         // but if there are SanitizedContentOperators at the end, then make sure that their input
         // is of the appropriate type since we know that they will not change the content type.
         int newPrintDirectiveIndex = printNode.numChildren();
         while (newPrintDirectiveIndex > 0) {
-          String printDirectiveName = printNode.getChild(newPrintDirectiveIndex - 1).getName();
-          ContentKind contentKind = sanitizedContentOperators.get(printDirectiveName);
+          SoyPrintDirective printDirective =
+              printNode.getChild(newPrintDirectiveIndex - 1).getPrintDirective();
+          SanitizedContentKind contentKind =
+              printDirective instanceof SanitizedContentOperator
+                  ? SanitizedContentKind.valueOf(
+                      ((SanitizedContentOperator) printDirective).getContentKind().name())
+                  : null;
           if (contentKind == null || contentKind != escapingMode.contentKind) {
             break;
           }
@@ -141,112 +131,55 @@ final class Rewriter {
       }
     }
 
-    /**
-     * Do nothing.
-     */
-    @Override protected void visitRawTextNode(RawTextNode rawTextNode) {
+    /** Do nothing. */
+    @Override
+    protected void visitRawTextNode(RawTextNode rawTextNode) {
       // TODO: Possibly normalize raw text nodes by adding quotes around unquoted attributes with
       // non-noescape dynamic content to avoid the need for space escaping.
     }
 
-    /**
-     * Grabs the inferred escaping directives from the node in string form.
-     */
-    private ImmutableList<String> getDirectiveNamesForNode(SoyNode node) {
-      ImmutableList.Builder<String> escapingDirectiveNames = new ImmutableList.Builder<>();
-      for (EscapingMode escapingMode : inferences.getEscapingModesForId(node.getId())) {
-        escapingDirectiveNames.add(escapingMode.directiveName);
+    /** Grabs the inferred escaping directives from the node in string form. */
+    private ImmutableList<SoyPrintDirective> getDirectivesForNode(SoyNode node) {
+      ImmutableList.Builder<SoyPrintDirective> escapingDirectiveNames =
+          new ImmutableList.Builder<>();
+      for (EscapingMode escapingMode : inferences.getEscapingModesForNode(node)) {
+        escapingDirectiveNames.add(printDirectives.get(escapingMode.directiveName));
       }
       return escapingDirectiveNames.build();
     }
 
-    /**
-     * Sets the escaping directives we inferred on the node.
-     */
-    @Override protected void visitMsgFallbackGroupNode(MsgFallbackGroupNode node) {
-      node.setEscapingDirectiveNames(getDirectiveNamesForNode(node));
+    /** Sets the escaping directives we inferred on the node. */
+    @Override
+    protected void visitMsgFallbackGroupNode(MsgFallbackGroupNode node) {
+      node.setEscapingDirectives(getDirectivesForNode(node));
       visitChildren(node);
     }
 
-    /**
-     * Rewrite call targets.
-     *
-     * Note that this processing is only applicable for CallBasicNodes. The reason is that
-     * CallDelegateNodes are always calling public templates (delegate templates are always public),
-     * and public templates never need rewriting.
-     *
-     * TODO: Modify contextual autoescape to deal with delegates appropriately.
-     */
-    @Override protected void visitCallNode(CallNode callNode) {
-      // We cannot easily access the original context.  However, because everything has already been
-      // parsed, that should be fine.  I don't think this can fail at all, but whatever.
-      SoyParsingContext context = SoyParsingContext.empty(errorReporter, "fake.namespace");
-
-      String derivedCalleeName = inferences.getDerivedCalleeNameForCallId(callNode.getId());
+    /** Rewrite call targets. */
+    @Override
+    protected void visitCallNode(CallNode node) {
+      String derivedCalleeName = inferences.getDerivedCalleeNameForCall(node);
       if (derivedCalleeName != null) {
-        // Creates a new call node, but with a different target name.
-        // TODO: Create a CallNode.withNewName() convenience method.
-        CallNode newCallNode;
-        if (callNode instanceof CallBasicNode) {
-          // For simplicity, use the full callee name as the source callee name.
-          newCallNode = new CallBasicNode.Builder(callNode.getId(), callNode.getSourceLocation())
-              .calleeName(derivedCalleeName)
-              .sourceCalleeName(derivedCalleeName)
-              .dataAttribute(callNode.dataAttribute())
-              .userSuppliedPlaceholderName(callNode.getUserSuppliedPhName())
-              .syntaxVersionBound(callNode.getSyntaxVersionUpperBound())
-              .escapingDirectiveNames(callNode.getEscapingDirectiveNames())
-              .build(context);
+        if (node instanceof CallBasicNode) {
+          CallBasicNode cast = (CallBasicNode) node;
+          cast.setNewCalleeName(derivedCalleeName);
         } else {
-          CallDelegateNode callNodeCast = (CallDelegateNode) callNode;
-          newCallNode = new CallDelegateNode.Builder(callNode.getId(), callNode.getSourceLocation())
-              .delCalleeName(derivedCalleeName)
-              .delCalleeVariantExpr(callNodeCast.getDelCalleeVariantExpr())
-              .allowEmptyDefault(callNodeCast.allowsEmptyDefault())
-              .dataAttribute(callNode.dataAttribute())
-              .userSuppliedPlaceholderName(callNode.getUserSuppliedPhName())
-              .escapingDirectiveNames(callNode.getEscapingDirectiveNames())
-              .build(context);
+          ((CallDelegateNode) node).setDelCalleeName(derivedCalleeName);
         }
-        if (!callNode.getCommandText().equals(newCallNode.getCommandText())) {
-          moveChildrenTo(callNode, newCallNode);
-          replaceChild(callNode, newCallNode);
-        }
-        // Ensure we visit the new node instead of the old one.
-        callNode = newCallNode;
       }
 
       // For strict templates, set any necessary escaping directives.
-      callNode.setEscapingDirectiveNames(getDirectiveNamesForNode(callNode));
+      node.setEscapingDirectives(getDirectivesForNode(node));
 
-      visitChildrenAllowingConcurrentModification(callNode);
+      visitChildren(node);
     }
 
-    /**
-     * Recurses to children.
-     */
-    @Override protected void visitSoyNode(SoyNode node) {
+    /** Recurses to children. */
+    @Override
+    protected void visitSoyNode(SoyNode node) {
       if (node instanceof ParentSoyNode<?>) {
-        visitChildrenAllowingConcurrentModification((ParentSoyNode<?>) node);
+        visitChildren((ParentSoyNode<?>) node);
       }
     }
-
   }
-
-
-  /**
-   * Replaces old child with new child.
-   */
-  private static void replaceChild(StandaloneNode oldChild, StandaloneNode newChild) {
-    oldChild.getParent().replaceChild(oldChild, newChild);
-  }
-
-
-  private static <T extends SoyNode> void moveChildrenTo(
-      ParentSoyNode<T> oldParent, ParentSoyNode<T> newParent) {
-    List<T> children = ImmutableList.copyOf(oldParent.getChildren());
-    oldParent.clearChildren();
-    newParent.addChildren(children);
-  }
-
 }

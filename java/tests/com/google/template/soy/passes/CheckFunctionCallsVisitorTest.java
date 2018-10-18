@@ -22,60 +22,19 @@ import com.google.common.base.Joiner;
 import com.google.common.collect.Iterables;
 import com.google.template.soy.SoyFileSetParserBuilder;
 import com.google.template.soy.basetree.SyntaxVersion;
-import com.google.template.soy.error.FormattingErrorReporter;
+import com.google.template.soy.error.ErrorReporter;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.JUnit4;
 
-import junit.framework.TestCase;
+/** @author Mike Samuel */
+@RunWith(JUnit4.class)
+public final class CheckFunctionCallsVisitorTest {
 
-/**
- */
-public final class CheckFunctionCallsVisitorTest extends TestCase {
-
-  public void testPureFunctionOk() {
-    assertSuccess(
-        "{namespace ns}\n",
-        "/**",
-        " * @param x",
-        " * @param y",
-        " */",
-        "{template .foo}",
-        "  {print min($x, $y)}",
-        "{/template}");
-  }
-
-  public void testIncorrectArity() {
-    assertFunctionCallsInvalid(
-        "Function 'min' called with 1 arguments (expected 2).",
-        "{namespace ns}\n",
-        "/**",
-        " * @param x",
-        " */",
-        "{template .foo}",
-        "  {print min($x)}",
-        "{/template}");
-    assertFunctionCallsInvalid(
-        "Function 'index' called with 0 arguments (expected 1).",
-        "{namespace ns}\n",
-        "{template .foo}",
-        "  {print index()}",
-        "{/template}");
-  }
-
-  public void testNestedFunctionCall() {
-    assertFunctionCallsInvalid(
-        "Function 'min' called with 1 arguments (expected 2).",
-        "{namespace ns}\n",
-        "/**",
-        " * @param x",
-        " * @param y",
-        " */",
-        "{template .foo}",
-        "  {print min(min($x), min($x, $y))}",
-        "{/template}");
-  }
-
+  @Test
   public void testNotALoopVariable1() {
     assertFunctionCallsInvalid(
-        "Function 'index' must have a foreach loop variable as its argument",
+        "Function 'index' must have a loop variable as its argument",
         "{namespace ns}\n",
         "/**",
         " * @param x",
@@ -85,9 +44,10 @@ public final class CheckFunctionCallsVisitorTest extends TestCase {
         "{/template}");
   }
 
+  @Test
   public void testNotALoopVariable2() {
     assertFunctionCallsInvalid(
-        "Function 'index' must have a foreach loop variable as its argument",
+        "Function 'index' must have a loop variable as its argument",
         "{namespace ns}\n",
         "/**",
         " * @param x",
@@ -97,18 +57,20 @@ public final class CheckFunctionCallsVisitorTest extends TestCase {
         "{/template}");
   }
 
+  @Test
   public void testNotALoopVariable3() {
     assertFunctionCallsInvalid(
-        "Function 'index' must have a foreach loop variable as its argument",
+        "Function 'index' must have a loop variable as its argument",
         "{namespace ns}\n",
         "{template .foo}",
         "  {print index($ij.data)}",
         "{/template}");
   }
 
+  @Test
   public void testNotALoopVariable4() {
     assertFunctionCallsInvalid(
-        "Function 'index' must have a foreach loop variable as its argument",
+        "Function 'index' must have a loop variable as its argument",
         "{namespace ns}\n",
         "/**",
         " * @param x",
@@ -118,6 +80,7 @@ public final class CheckFunctionCallsVisitorTest extends TestCase {
         "{/template}");
   }
 
+  @Test
   public void testLoopVariableOk() {
     assertSuccess(
         "{namespace ns}\n",
@@ -125,28 +88,30 @@ public final class CheckFunctionCallsVisitorTest extends TestCase {
         " * @param elements",
         " */",
         "{template .foo}",
-        "  {foreach $z in $elements}",
+        "  {for $z in $elements}",
         "    {if isLast($z)}Lorem Ipsum{/if}",
-        "  {/foreach}",
+        "  {/for}",
         "{/template}");
   }
 
+  @Test
   public void testLoopVariableNotInScopeWhenEmpty() {
     assertFunctionCallsInvalid(
-        "Function 'index' must have a foreach loop variable as its argument",
+        "Function 'index' must have a loop variable as its argument",
         "{namespace ns}\n",
         "/**",
         " * @param elements",
         " */",
         "{template .foo}",
-        "  {foreach $z in $elements}",
+        "  {for $z in $elements}",
         "    Lorem Ipsum...",
         "  {ifempty}",
         "    {print index($elements)}", // Loop variable not in scope when empty.
-        "  {/foreach}",
+        "  {/for}",
         "{/template}");
   }
 
+  @Test
   public void testQuoteKeysIfJsFunction() {
     assertSuccess(
         "{namespace ns}\n",
@@ -155,28 +120,75 @@ public final class CheckFunctionCallsVisitorTest extends TestCase {
         "{/template}");
 
     assertFunctionCallsInvalid(
-        "Function 'quoteKeysIfJs' called with argument of type string (expected map literal).",
+        "Function 'quoteKeysIfJs' called with incorrect arg type string (expected map literal).",
         "{namespace ns}\n",
         "{template .foo}",
         "  {let $m: quoteKeysIfJs('blah') /}",
         "{/template}");
   }
 
-  public void testUnrecognizedFunction() {
-    assertFunctionCallsInvalid(
-        "Unknown function 'bogus'.",
+  @Test
+  public void testCssFunction() {
+    assertSuccess(
         "{namespace ns}\n",
         "{template .foo}",
-        "  {print bogus()}",
+        "  {@param x : ?}",
+        "  {css('foo')}",
+        "  {css($x, 'foo')}",
+        "  {css('foo', 'bar')}",
+        "{/template}");
+
+    assertFunctionCallsInvalid(
+        "Argument to function 'css' must be a string literal.",
+        "{namespace ns}\n",
+        "{template .foo}",
+        "  {@param x : ?}",
+        "  {css($x)}",
+        "{/template}");
+
+    assertFunctionCallsInvalid(
+        "Argument to function 'css' must be a string literal.",
+        "{namespace ns}\n",
+        "{template .foo}",
+        "  {@param x : ?}",
+        "  {css($x, $x)}",
+        "{/template}");
+
+    assertFunctionCallsInvalid(
+        "Argument to function 'css' must be a string literal.",
+        "{namespace ns}\n",
+        "{template .foo}",
+        "  {@param x : ?}",
+        "  {css($x, 10)}",
         "{/template}");
   }
 
-  public void testUnrecognizedFunctionOkInV1() {
+  @Test
+  public void testV1ExpressionFunction() {
     assertPasses(
         SyntaxVersion.V1_0,
         "{namespace ns}\n",
+        "{template .foo deprecatedV1=\"true\"}",
+        "  {let $m: v1Expression('blah.length') /}",
+        "{/template}");
+
+    assertFunctionCallsInvalid(
+        SyntaxVersion.V1_0,
+        "Incorrect syntax for version 1.0: The v1Expression function can only be used in templates "
+            + "marked with the deprecatedV1=\"true\" attribute.",
+        "{namespace ns}\n",
         "{template .foo}",
-        "  {print bogus()}",
+        "  {let $blah: 'foo' /}",
+        "  {let $m: v1Expression('$blah') /}",
+        "{/template}");
+
+    assertFunctionCallsInvalid(
+        SyntaxVersion.V1_0,
+        "Argument to function 'v1Expression' must be a string literal.",
+        "{namespace ns}\n",
+        "{template .foo deprecatedV1=\"true\"}",
+        "  {let $blah: 'foo' /}",
+        "  {let $m: v1Expression($blah) /}",
         "{/template}");
   }
 
@@ -192,11 +204,18 @@ public final class CheckFunctionCallsVisitorTest extends TestCase {
   }
 
   private void assertFunctionCallsInvalid(String errorMessage, String... lines) {
-    FormattingErrorReporter errorReporter = new FormattingErrorReporter();
+    assertFunctionCallsInvalid(SyntaxVersion.V2_0, errorMessage, lines);
+  }
+
+  private void assertFunctionCallsInvalid(
+      SyntaxVersion declaredSyntaxVersion, String errorMessage, String... lines) {
+    ErrorReporter errorReporter = ErrorReporter.createForTest();
     SoyFileSetParserBuilder.forFileContents(Joiner.on('\n').join(lines))
+        .declaredSyntaxVersion(declaredSyntaxVersion)
         .errorReporter(errorReporter)
         .parse();
-    assertThat(errorReporter.getErrorMessages()).hasSize(1);
-    assertThat(Iterables.getOnlyElement(errorReporter.getErrorMessages())).contains(errorMessage);
+    assertThat(errorReporter.getErrors()).hasSize(1);
+    assertThat(Iterables.getOnlyElement(errorReporter.getErrors()).message())
+        .contains(errorMessage);
   }
 }

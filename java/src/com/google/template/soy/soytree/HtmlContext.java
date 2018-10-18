@@ -19,19 +19,18 @@ import javax.annotation.Nullable;
 
 /**
  * The type of HTML (or non-HTML) that contains a Soy node. This is primarily used by the contextual
- * auto-escaper to add escaping directives.  It's also used by incremental DOM's HTML parser to mark
+ * auto-escaper to add escaping directives. It's also used by incremental DOM's HTML parser to mark
  * nodes for other passes to consume.
  */
 public enum HtmlContext {
 
-  /** Outside an HTML tag, directive, or comment.  (Parsed character data). */
+  /** Outside an HTML tag, directive, or comment. (Parsed character data). */
   HTML_PCDATA(EscapingMode.ESCAPE_HTML),
 
   /**
    * Inside an element whose content is RCDATA where text and entities can appear but where nested
-   * elements cannot.
-   * The content of {@code <title>} and {@code <textarea>} fall into this category since they
-   * cannot contain nested elements in HTML.
+   * elements cannot. The content of {@code <title>} and {@code <textarea>} fall into this category
+   * since they cannot contain nested elements in HTML.
    */
   HTML_RCDATA(EscapingMode.ESCAPE_HTML_RCDATA),
 
@@ -44,11 +43,12 @@ public enum HtmlContext {
   /**
    * Just after a tag name, e.g. in ^ in <script^> or <div^>.
    *
-   * <p>Note tag names must be printed all at once since we can't otherwise
-   * easily handle <s{if 1}cript{/if}>.
+   * <p>Note tag names must be printed all at once since we can't otherwise easily handle <s{if
+   * 1}cript{/if}>.
    */
-  HTML_TAG_NAME("Dynamic values are not permitted in the middle of an HTML tag name;"
-      + " try adding a space before."),
+  HTML_TAG_NAME(
+      "Dynamic values are not permitted in the middle of an HTML tag name;"
+          + " try adding a space before."),
 
   /** Before an HTML attribute or the end of a tag. */
   HTML_TAG(EscapingMode.FILTER_HTML_ATTRIBUTES),
@@ -56,9 +56,6 @@ public enum HtmlContext {
 
   /** Inside an HTML attribute name. */
   HTML_ATTRIBUTE_NAME(EscapingMode.FILTER_HTML_ATTRIBUTES),
-
-  /** Following an equals sign (<tt>=</tt>) after an attribute name in an HTML tag. */
-  HTML_BEFORE_ATTRIBUTE_VALUE("(unexpected state)"),
 
   /** Inside an HTML comment. */
   HTML_COMMENT(EscapingMode.ESCAPE_HTML_RCDATA),
@@ -105,28 +102,32 @@ public enum HtmlContext {
   /** In JavaScript inside a regular expression literal. */
   JS_REGEX(EscapingMode.ESCAPE_JS_REGEX),
 
+  /**
+   * In JavaScript inside a template literal string.
+   *
+   * <p>See https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Template_literals
+   */
+  JS_TEMPLATE_LITERAL("Js template literals cannot contain dynamic values"),
+
   /** In a URI, which may or may not be in an HTML attribute. */
   URI(EscapingMode.NORMALIZE_URI),
 
   /** Plain text; no escaping. */
-  TEXT(EscapingMode.TEXT)
-  ;
+  TEXT(EscapingMode.TEXT);
 
   @Nullable private final EscapingMode escapingMode;
   @Nullable private final String errorMessage;
 
   /**
-   * The escaping mode appropriate for dynamic content inserted at this state.
-   * Null if there is no appropriate escaping convention to use as for comments or plain text
-   * which do not have escaping conventions.
+   * The escaping mode appropriate for dynamic content inserted at this state. Null if there is no
+   * appropriate escaping convention to use as for comments or plain text which do not have escaping
+   * conventions.
    */
   public EscapingMode getEscapingMode() {
     return escapingMode;
   }
 
-  /**
-   * Error message to show when trying to print a dynamic value inside of this state.
-   */
+  /** Error message to show when trying to print a dynamic value inside of this state. */
   public String getErrorMessage() {
     return errorMessage;
   }
@@ -140,5 +141,4 @@ public enum HtmlContext {
     this.errorMessage = errorMessage;
     this.escapingMode = null;
   }
-
 }
